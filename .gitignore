@@ -1,0 +1,8 @@
+# Build output
+dist/
+
+# ZET
+ZET-debug.log
+
+# Dependencies
+node_modules/
