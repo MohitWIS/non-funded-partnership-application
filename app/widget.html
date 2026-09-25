@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Non-Funded Partnership Dashboard</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://js.zohostatic.com/creator/widgets/version/2.0/widgetsdk-min.js"></script>
+</head>
+
+<body>
+    <div class="accent-strip" aria-hidden="true"></div>
+
+    <div class="page">
+        <!-- Header -->
+        <header class="page-header">
+            <div class="page-header-text">
+                <h1>Non-Funded Partnership Applications</h1>
+                <p class="subtitle">Live overview of application cases, statuses and communication</p>
+            </div>
+            <div class="page-header-actions">
+                <span id="sample-badge" class="sample-badge" hidden>Sample data &mdash; open inside Zoho Creator for
+                    live data</span>
+                <span id="last-updated" class="last-updated"></span>
+                <button id="refresh-btn" class="btn-refresh" type="button" title="Refresh data">
+                    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+                        <path
+                            d="M13.65 2.35A7.96 7.96 0 0 0 8 0C3.58 0 .01 3.58.01 8S3.58 16 8 16c3.73 0 6.84-2.55 7.73-6h-2.08A5.99 5.99 0 0 1 8 14 6 6 0 1 1 8 2c1.66 0 3.14.69 4.22 1.78L9 7h7V0l-2.35 2.35z"
+                            fill="currentColor" />
+                    </svg>
+                    <span>Refresh</span>
+                </button>
+            </div>
+        </header>
+
+        <!-- Filter row: scopes everything below it -->
+        <div class="filter-row" role="group" aria-label="Filters">
+            <span class="filter-label">Period</span>
+            <div class="segmented" id="range-control">
+                <button type="button" data-range="all" class="is-selected">All time</button>
+                <button type="button" data-range="90">Last 90 days</button>
+                <button type="button" data-range="30">Last 30 days</button>
+                <button type="button" data-range="7">Last 7 days</button>
+            </div>
+            <span class="filter-label">Status</span>
+            <div class="segmented" id="status-control">
+                <button type="button" data-status="all" class="is-selected">All</button>
+                <button type="button" data-status="pending">Pending</button>
+                <button type="button" data-status="approved">Approved</button>
+                <button type="button" data-status="rejected">Rejected</button>
+                <button type="button" data-status="sentback">Sent back</button>
+                <button type="button" data-status="resubmitted">Resubmitted</button>
+            </div>
+        </div>
+
+        <!-- SDK error panel (hidden unless the SDK fails) -->
+        <div id="boot-state" class="boot-state" hidden></div>
+
+        <!-- Dashboard body -->
+        <main id="dashboard" class="dashboard">
+
+            <!-- KPI row -->
+            <section id="kpi-grid" class="kpi-grid" aria-label="Key metrics"></section>
+
+            <!-- Charts -->
+            <section class="charts-grid">
+                <div class="card" id="donut-card">
+                    <div class="card-head">
+                        <div>
+                            <h2>Case status distribution</h2>
+                            <p class="card-sub">Share of cases by current status</p>
+                        </div>
+                        <div class="view-toggle" data-for="donut">
+                            <button type="button" data-view="chart" class="is-selected">Chart</button>
+                            <button type="button" data-view="table">Table</button>
+                        </div>
+                    </div>
+                    <div class="card-body" id="donut-body"></div>
+                </div>
+
+                <div class="card" id="trend-card">
+                    <div class="card-head">
+                        <div>
+                            <h2>Applications received</h2>
+                            <p class="card-sub" id="trend-sub">Applications over time</p>
+                        </div>
+                        <div class="view-toggle" data-for="trend">
+                            <button type="button" data-view="chart" class="is-selected">Chart</button>
+                            <button type="button" data-view="table">Table</button>
+                        </div>
+                    </div>
+                    <div class="card-body" id="trend-body"></div>
+                </div>
+            </section>
+
+            <!-- Recent applications table -->
+            <section class="card" id="recent-card">
+                <div class="card-head">
+                    <div>
+                        <h2>Applications</h2>
+                        <p class="card-sub" id="recent-sub">Records from the partnership application report</p>
+                    </div>
+                    <input id="recent-search" class="table-search" type="search" placeholder="Search records&hellip;"
+                        aria-label="Search records">
+                </div>
+                <div class="card-body table-scroll" id="recent-body"></div>
+            </section>
+        </main>
+    </div>
+
+    <div id="viz-tip" class="viz-tip" hidden></div>
+
+    <script src="js/script.js"></script>
+</body>
+
+</html>
