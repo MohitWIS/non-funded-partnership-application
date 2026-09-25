@@ -17,7 +17,7 @@
         <header class="page-header">
             <div class="page-header-text">
                 <h1>Non-Funded Partnership Applications</h1>
-                <p class="subtitle">Live overview of application cases, statuses and communication</p>
+                <p class="subtitle">Form-sharing outreach, responses and case decisions</p>
             </div>
             <div class="page-header-actions">
                 <span id="sample-badge" class="sample-badge" hidden>Sample data &mdash; open inside Zoho Creator for
@@ -34,17 +34,24 @@
             </div>
         </header>
 
-        <!-- Filter row: scopes everything below it -->
+        <!-- Dashboard switch: A. Cumulative (till date) / B. Daily (today) -->
+        <div class="segmented dash-switch" id="view-control" role="tablist" aria-label="Dashboard">
+            <button type="button" role="tab" data-view="cumulative" class="is-selected" aria-selected="true">Cumulative
+                (Till date)</button>
+            <button type="button" role="tab" data-view="daily" aria-selected="false">Daily (Today)</button>
+        </div>
+
+        <!-- Filters: assignee + date range -->
         <div class="filter-row" role="group" aria-label="Filters">
-            <span class="filter-label">Period</span>
-            <div class="segmented" id="range-control">
-                <button type="button" data-range="all" class="is-selected">All time</button>
-                <button type="button" data-range="90">Last 90 days</button>
-                <button type="button" data-range="30">Last 30 days</button>
-                <button type="button" data-range="7">Last 7 days</button>
-            </div>
+            <span class="filter-label">Date range</span>
+            <input id="date-from" class="filter-input" type="date" aria-label="From date">
+            <span class="filter-label">to</span>
+            <input id="date-to" class="filter-input" type="date" aria-label="To date">
+            <button id="date-clear" class="btn-link" type="button">Clear</button>
+            <span id="date-hint" class="filter-hint" hidden>Daily dashboard always shows today</span>
+            <span class="filter-sep" aria-hidden="true"></span>
             <span class="filter-label">Assignee</span>
-            <select id="assignee-control" class="assignee-select" aria-label="Filter by assignee">
+            <select id="assignee-control" class="filter-input" aria-label="Filter by assignee">
                 <option value="all">All assignees</option>
             </select>
         </div>
@@ -56,29 +63,19 @@
         <main id="dashboard" class="dashboard">
 
             <!-- KPI row -->
+            <div class="section-head">
+                <h2 id="kpi-title">Cumulative dashboard</h2>
+                <span id="kpi-period" class="section-period"></span>
+            </div>
             <section id="kpi-grid" class="kpi-grid" aria-label="Key metrics"></section>
 
             <!-- Charts -->
             <section class="charts-grid">
-                <div class="card" id="donut-card">
-                    <div class="card-head">
-                        <div>
-                            <h2>Case status distribution</h2>
-                            <p class="card-sub">Share of cases by current status</p>
-                        </div>
-                        <div class="view-toggle" data-for="donut">
-                            <button type="button" data-view="chart" class="is-selected">Chart</button>
-                            <button type="button" data-view="table">Table</button>
-                        </div>
-                    </div>
-                    <div class="card-body" id="donut-body"></div>
-                </div>
-
                 <div class="card" id="trend-card">
                     <div class="card-head">
                         <div>
                             <h2>Emails sent vs responses received</h2>
-                            <p class="card-sub" id="trend-sub">Form-sharing outreach against form responses</p>
+                            <p class="card-sub" id="trend-sub"></p>
                         </div>
                         <div class="view-toggle" data-for="trend">
                             <button type="button" data-view="chart" class="is-selected">Chart</button>
@@ -87,14 +84,27 @@
                     </div>
                     <div class="card-body" id="trend-body"></div>
                 </div>
+
+                <div class="card" id="donut-card">
+                    <div class="card-head">
+                        <div>
+                            <h2>Case status</h2>
+                            <p class="card-sub" id="donut-sub"></p>
+                        </div>
+                        <div class="view-toggle" data-for="donut">
+                            <button type="button" data-view="chart" class="is-selected">Chart</button>
+                            <button type="button" data-view="table">Table</button>
+                        </div>
+                    </div>
+                    <div class="card-body" id="donut-body"></div>
+                </div>
             </section>
 
-            <!-- Assignee workload -->
             <section class="card" id="assignee-card">
                 <div class="card-head">
                     <div>
-                        <h2>Applications by assignee</h2>
-                        <p class="card-sub" id="assignee-sub">Case load across assignees</p>
+                        <h2>Cases by assignee</h2>
+                        <p class="card-sub" id="assignee-sub"></p>
                     </div>
                     <div class="view-toggle" data-for="assignee">
                         <button type="button" data-view="chart" class="is-selected">Chart</button>
@@ -102,19 +112,6 @@
                     </div>
                 </div>
                 <div class="card-body" id="assignee-body"></div>
-            </section>
-
-            <!-- Recent applications table -->
-            <section class="card" id="recent-card">
-                <div class="card-head">
-                    <div>
-                        <h2>Applications</h2>
-                        <p class="card-sub" id="recent-sub">Records from the partnership application report</p>
-                    </div>
-                    <input id="recent-search" class="table-search" type="search" placeholder="Search records&hellip;"
-                        aria-label="Search records">
-                </div>
-                <div class="card-body table-scroll" id="recent-body"></div>
             </section>
         </main>
     </div>

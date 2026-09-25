@@ -1,74 +1,87 @@
 /* =====================================================================
    Non-Funded Partnership Application — dashboard widget
-   Fetches Zoho Creator reports via the Widget SDK (v2, v1 fallback)
-   and renders KPIs + SVG charts. No external libraries.
+   Fetches Zoho Creator reports via the Widget SDK v2 and renders
+   KPIs + SVG charts. No external libraries.
 
-   KPIs: emails sent (form-sharing), form responses received,
+   A. Cumulative dashboard (till date)  B. Daily dashboard (today)
+   KPIs: emails sent (form-sharing module), form responses received,
          approved / rejected / sent-back cases.
-   Filters: date range + assignee.
+   Filters: assignee + date range.
+
+   Data sources
+   - Applications report : current Status + Assignee of every application
+   - Audit log report    : one row per action (Submitted / Approved /
+                           Rejected / Sent Back / Resubmitted) with its
+                           timestamp — gives every event a date
+   - Emails report       : form-sharing emails with their sent date
    ===================================================================== */
 (function () {
     "use strict";
 
     var CONFIG = {
-        accountOwner: "itzoho_nsdcindia",
         appLinkName: "non-funded-partnership-application",
         reports: {
-            main:        "NSDC_Partnership_Application_Report",
-            pending:     "My_Pending_Cases",
-            approved:    "Approved_Cases",
-            rejected:    "Rejected_Cases",
-            sentback:    "Sent_Back_Cases",
-            resubmitted: "Resubmitted_Cases",
-            emails:      "All_Emails"
+            applications: { name: "NSDC_Partnership_Application_Report", fields: "Status,Assignee" },
+            audit: { name: "Audit_Log_Report", fields: "NSDC_Partnership_Application_Form,Action_field,Action_Time" },
+            emails: { name: "All_Emails", fields: "Email_Sent_Date" }
+        },
+        fields: {
+            status: "Status",
+            assignee: "Assignee",
+            auditApp: "NSDC_Partnership_Application_Form",
+            auditAction: "Action_field",
+            auditTime: "Action_Time",
+            emailSent: "Email_Sent_Date"
         },
         pageSize: 200,
-        maxPages: 10,          // up to 2,000 records per report
+        maxPages: 50,          // up to 10,000 records per report
         initTimeoutMs: 9000,
         fetchTimeoutMs: 30000  // per-report cap so one hung fetch can't freeze the UI
     };
+    var F = CONFIG.fields;
+    var UNASSIGNED = "Unassigned";
+    var DAY = 86400000;
 
     /* Donut segment order — CVD-validated adjacency (do not reorder) */
     var STATUSES = [
-        { key: "approved",    label: "Approved",    cls: "approved" },
-        { key: "pending",     label: "Pending",     cls: "pending" },
-        { key: "rejected",    label: "Rejected",    cls: "rejected" },
-        { key: "resubmitted", label: "Resubmitted", cls: "resubmitted" },
-        { key: "sentback",    label: "Sent back",   cls: "sentback" }
+        { key: "approved", label: "Approved" },
+        { key: "pending", label: "Under review" },
+        { key: "rejected", label: "Rejected" },
+        { key: "resubmitted", label: "Resubmitted" },
+        { key: "sentback", label: "Sent back" }
     ];
 
-    /* The five required KPIs */
     var TILES = [
-        { key: "emails",    label: "Emails sent",             note: "Form-sharing module", ds: "emails",   chip: "chip-emails",   icon: "mail",  spark: true },
-        { key: "responses", label: "Form responses received", ds: "main",     chip: "chip-total",    icon: "doc",   spark: true },
-        { key: "approved",  label: "Total approved cases",    ds: "approved", chip: "chip-approved", icon: "check" },
-        { key: "rejected",  label: "Total rejected cases",    ds: "rejected", chip: "chip-rejected", icon: "x" },
-        { key: "sentback",  label: "Total sent back cases",   ds: "sentback", chip: "chip-sentback", icon: "undo" }
+        { key: "emails", label: "Emails sent", note: "Form-sharing module", chip: "chip-emails", icon: "mail" },
+        { key: "responses", label: "Form responses received", chip: "chip-total", icon: "doc" },
+        { key: "approved", label: "Approved cases", chip: "chip-approved", icon: "check" },
+        { key: "rejected", label: "Rejected cases", chip: "chip-rejected", icon: "x" },
+        { key: "sentback", label: "Sent back cases", chip: "chip-sentback", icon: "undo" }
     ];
 
     var ICONS = {
-        doc:   ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6"],
-        clock: ["M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z", "M12 7v5l3 3"],
+        doc: ["M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z", "M14 2v6h6"],
         check: ["M20 6L9 17l-5-5"],
-        x:     ["M18 6L6 18", "M6 6l12 12"],
-        undo:  ["M9 14L4 9l5-5", "M20 20v-7a4 4 0 0 0-4-4H4"],
-        redo:  ["M1 4v6h6", "M3.51 15a9 9 0 1 0 2.13-9.36L1 10"],
-        mail:  ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"]
+        x: ["M18 6L6 18", "M6 6l12 12"],
+        undo: ["M9 14L4 9l5-5", "M20 20v-7a4 4 0 0 0-4-4H4"],
+        mail: ["M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z", "M22 6l-10 7L2 6"]
     };
 
     var state = {
-        datasets: {},          // key -> { records, truncated, error, dateKey, assigneeKey }
-        range: "all",          // 'all' | '90' | '30' | '7'
-        assignee: "all",       // 'all' | an assignee display value
-        search: "",            // table text search
-        tableLimit: 25,        // rows shown in the records table
+        datasets: {},          // key -> { records, truncated, error }
+        view: "cumulative",    // 'cumulative' | 'daily'
+        from: null,            // Date (start of day) | null
+        to: null,              // Date (start of day) | null — inclusive
+        assignee: "all",
         views: { donut: "chart", trend: "chart", assignee: "chart" },
         sample: false,
         inited: false,
-        rendered: false,
         lastUpdated: null,
         trendFocus: -1
     };
+
+    /* Derived from datasets by buildModel() */
+    var model = { apps: [], emails: [] };
 
     var nf = new Intl.NumberFormat("en-IN");
     function fmt(n) { return nf.format(n); }
@@ -77,34 +90,30 @@
     var el = {
         boot: document.getElementById("boot-state"),
         dashboard: document.getElementById("dashboard"),
+        kpiTitle: document.getElementById("kpi-title"),
+        kpiPeriod: document.getElementById("kpi-period"),
         kpiGrid: document.getElementById("kpi-grid"),
         donutBody: document.getElementById("donut-body"),
+        donutSub: document.getElementById("donut-sub"),
         trendBody: document.getElementById("trend-body"),
         trendSub: document.getElementById("trend-sub"),
         assigneeBody: document.getElementById("assignee-body"),
         assigneeSub: document.getElementById("assignee-sub"),
-        recentBody: document.getElementById("recent-body"),
-        recentSub: document.getElementById("recent-sub"),
         sampleBadge: document.getElementById("sample-badge"),
         lastUpdated: document.getElementById("last-updated"),
         refreshBtn: document.getElementById("refresh-btn"),
-        rangeControl: document.getElementById("range-control"),
+        viewControl: document.getElementById("view-control"),
+        dateFrom: document.getElementById("date-from"),
+        dateTo: document.getElementById("date-to"),
+        dateClear: document.getElementById("date-clear"),
+        dateHint: document.getElementById("date-hint"),
         assigneeControl: document.getElementById("assignee-control"),
-        searchInput: document.getElementById("recent-search"),
         tip: document.getElementById("viz-tip")
     };
 
     /* ================================================================
        Data layer
        ================================================================ */
-    function apiVersion() {
-        if (window.ZOHO && ZOHO.CREATOR) {
-            if (ZOHO.CREATOR.DATA && typeof ZOHO.CREATOR.DATA.getRecords === "function") return "v2";
-            if (ZOHO.CREATOR.API && typeof ZOHO.CREATOR.API.getAllRecords === "function") return "v1";
-        }
-        return null;
-    }
-
     function errText(err) {
         if (!err) return "Unknown error";
         if (typeof err === "string") return err;
@@ -117,37 +126,29 @@
 
     function isNoData(err) {
         /* An empty report is data (count 0), not an error.
-           v2 SDK: 9220 "No records exist in this report." · v1: 3100 · REST: 9280 */
+           Creator answers HTTP 400 with code 9220 ("No records exist in
+           this report.") or 9280 (no records match criteria). */
         if (!err) return false;
         var rt = err.responseText;
         if (typeof rt === "string") { try { rt = JSON.parse(rt); } catch (e) { rt = null; } }
         var code = err.code != null ? err.code : (rt && rt.code);
-        if (code == 3100 || code == 9220 || code == 9280) return true; // loose ==: SDK may send "9220"
-        var msg = errText(err);
-        try { msg += " " + JSON.stringify(err); } catch (e2) { }
-        return /no records? exist|no (data|records)/i.test(msg);
+        return code == 9220 || code == 9280 || code == 3100; // loose ==: SDK may send "9220"
     }
 
-    function fetchReportV2(linkName) {
-        /* Try with field_config:"all" first (includes system fields like
-           Added_Time); if the SDK rejects that config, retry with defaults. */
-        var variants = [{ field_config: "all" }, {}];
+    function fetchReport(rep) {
+        /* Ask only for the fields the dashboard needs; if the report
+           rejects that field list, fall back to its default columns. */
+        var variants = [{ field_config: "custom", fields: rep.fields }, {}];
         function attempt(vi) {
             var out = [], pages = 0;
             function step(cursor) {
-                var cfg = {
-                    app_name: CONFIG.appLinkName,
-                    report_name: linkName,
-                    max_records: CONFIG.pageSize
-                };
+                var cfg = { app_name: CONFIG.appLinkName, report_name: rep.name, max_records: CONFIG.pageSize };
                 Object.assign(cfg, variants[vi]);
                 if (cursor) cfg.record_cursor = cursor;
                 return ZOHO.CREATOR.DATA.getRecords(cfg).then(function (res) {
                     if (res && res.data && res.data.length) out = out.concat(res.data);
                     pages++;
-                    var next = res && (res.record_cursor ||
-                        (res.info && res.info.record_cursor) ||
-                        (res.meta && res.meta.record_cursor));
+                    var next = res && res.record_cursor;
                     if (next && pages < CONFIG.maxPages) return step(next);
                     return { records: out, truncated: !!next };
                 });
@@ -159,32 +160,6 @@
             });
         }
         return attempt(0);
-    }
-
-    function fetchReportV1(linkName) {
-        var out = [], page = 1;
-        function step() {
-            return ZOHO.CREATOR.API.getAllRecords({
-                appName: CONFIG.appLinkName,
-                reportName: linkName,
-                page: page,
-                pageSize: CONFIG.pageSize
-            }).then(function (res) {
-                var recs = (res && res.data) || [];
-                out = out.concat(recs);
-                if (recs.length === CONFIG.pageSize && page < CONFIG.maxPages) { page++; return step(); }
-                return { records: out, truncated: recs.length === CONFIG.pageSize && page >= CONFIG.maxPages };
-            });
-        }
-        return step();
-    }
-
-    function fetchReport(linkName) {
-        var fn = apiVersion() === "v2" ? fetchReportV2 : fetchReportV1;
-        return fn(linkName).catch(function (err) {
-            if (isNoData(err)) return { records: [], truncated: false };
-            throw err;
-        });
     }
 
     function withTimeout(promise, ms, label) {
@@ -199,29 +174,26 @@
         });
     }
 
+    var loadSeq = 0;
     function loadAll() {
+        var seq = ++loadSeq;           // results from an older load are ignored
         var keys = Object.keys(CONFIG.reports);
-        setRefreshing(true);
-        state.sample = false;
         var remaining = keys.length;
-        /* Paint the dashboard immediately; each section fills in as its
-           report arrives — there is no blocking loader screen. */
-        if (!state.rendered) renderAll();
+        state.sample = false;
+        el.boot.hidden = true;
+        setRefreshing(true);
         keys.forEach(function (k) {
-            withTimeout(fetchReport(CONFIG.reports[k]), CONFIG.fetchTimeoutMs, CONFIG.reports[k]).then(
+            var rep = CONFIG.reports[k];
+            withTimeout(fetchReport(rep), CONFIG.fetchTimeoutMs, rep.name).then(
                 function (v) {
-                    state.datasets[k] = {
-                        records: v.records,
-                        truncated: v.truncated,
-                        error: false,
-                        dateKey: detectDateKey(v.records),
-                        assigneeKey: detectAssigneeKey(v.records)
-                    };
+                    if (seq !== loadSeq) return;
+                    state.datasets[k] = { records: v.records, truncated: v.truncated, error: false };
                     done();
                 },
                 function (e) {
-                    console.error("[dashboard] failed to fetch report " + CONFIG.reports[k], e);
-                    state.datasets[k] = { records: [], truncated: false, error: true, dateKey: null, assigneeKey: null };
+                    if (seq !== loadSeq) return;
+                    console.error("[dashboard] failed to fetch report " + rep.name, e);
+                    state.datasets[k] = { records: [], truncated: false, error: true };
                     done();
                 }
             );
@@ -229,146 +201,223 @@
         function done() {
             remaining--;
             state.lastUpdated = new Date();
-            try { renderAll(); } catch (e) { console.error("[dashboard] render error", e); }
+            buildModel();
+            renderAll();
             if (remaining === 0) setRefreshing(false);
         }
     }
 
     /* ================================================================
-       Dates, assignees & filtering
+       Parsing & model
        ================================================================ */
     function parseDate(v) {
-        if (!v) return null;
-        if (v instanceof Date) return isNaN(v) ? null : v;
-        if (typeof v !== "string") return null;
+        if (!v || typeof v !== "string") return null;
         var s = v.trim();
-        if (!s) return null;
-        // dd-MMM-yyyy [HH:mm[:ss]]
+        // dd-MMM-yyyy [HH:mm[:ss]]  (Creator's configured date format)
         var m = s.match(/^(\d{1,2})-([A-Za-z]{3})-(\d{4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?/);
         if (m) {
-            var d = new Date(m[1] + " " + m[2] + " " + m[3] +
-                (m[4] ? " " + m[4] + ":" + m[5] + ":" + (m[6] || "00") : ""));
-            return isNaN(d) ? null : d;
-        }
-        // dd/MM/yyyy
-        var m2 = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
-        if (m2) {
-            var d2 = new Date(+m2[3], +m2[2] - 1, +m2[1]);
-            return isNaN(d2) ? null : d2;
-        }
-        var d3 = new Date(s);
-        return isNaN(d3) ? null : d3;
-    }
-
-    function detectDateKey(records) {
-        if (!records || !records.length) return null;
-        var sample = records.slice(0, 5);
-        var keys = Object.keys(sample[0] || {});
-        var exact = null, fuzzy = null;
-        keys.forEach(function (k) {
-            if (exact) return;
-            if (/^added.?time$/i.test(k)) { exact = k; return; }
-        });
-        if (exact) return exact;
-        keys.forEach(function (k) {
-            if (fuzzy) return;
-            if (/date|time/i.test(k) && !/format|zone/i.test(k)) {
-                var ok = sample.some(function (r) { return parseDate(r[k]); });
-                if (ok) fuzzy = k;
-            }
-        });
-        return fuzzy;
-    }
-
-    function detectAssigneeKey(records) {
-        if (!records || !records.length) return null;
-        var keys = Object.keys(records[0] || {});
-        for (var i = 0; i < keys.length; i++) {
-            var k = keys[i];
-            if (/date|time/i.test(k)) continue;
-            if (/assign|owner|officer|handled|reviewer/i.test(k)) return k;
+            var mon = MONTHS.indexOf(m[2].charAt(0).toUpperCase() + m[2].slice(1).toLowerCase());
+            if (mon < 0) return null;
+            return new Date(+m[3], mon, +m[1], +(m[4] || 0), +(m[5] || 0), +(m[6] || 0));
         }
         return null;
     }
 
-    function assigneeOf(rec, key) {
-        var v = cellText(rec[key]);
-        return v || "Unassigned";
+    function cellText(v) {
+        if (v == null) return "";
+        if (typeof v === "string") return v.trim();
+        if (typeof v === "number" || typeof v === "boolean") return String(v);
+        if (Array.isArray(v)) return v.map(cellText).filter(Boolean).join(", ");
+        if (typeof v === "object") return v.zc_display_value || v.display_value || "";
+        return "";
     }
 
-    function rangeCutoff() {
-        if (state.range === "all") return null;
-        var d = new Date();
-        d.setHours(0, 0, 0, 0);
-        d.setDate(d.getDate() - (parseInt(state.range, 10) - 1));
-        return d;
+    function actionKey(s) {
+        var v = String(s || "").toLowerCase();
+        if (/resubmit/.test(v)) return "resubmitted";
+        if (/sent.?back|send.?back/.test(v)) return "sentback";
+        if (/approv/.test(v)) return "approved";
+        if (/reject/.test(v)) return "rejected";
+        if (/submit/.test(v)) return "submitted";
+        return null;
     }
 
-    function filteredRecords(ds) {
-        if (!ds) return [];
-        var recs = ds.records;
-        var c = rangeCutoff();
-        if (c && ds.dateKey) {
-            recs = recs.filter(function (r) {
-                var d = parseDate(r[ds.dateKey]);
-                return d && d >= c;
+    function statusKey(s) {
+        var k = actionKey(s);
+        return !k || k === "submitted" ? "pending" : k;
+    }
+
+    function buildModel() {
+        var byId = {}, apps = [];
+        var A = state.datasets.applications, L = state.datasets.audit, E = state.datasets.emails;
+        if (A && !A.error) {
+            A.records.forEach(function (r) {
+                var a = {
+                    id: String(r.ID),
+                    status: statusKey(cellText(r[F.status])),
+                    assignee: cellText(r[F.assignee]) || UNASSIGNED,
+                    events: [],
+                    receivedAt: null
+                };
+                byId[a.id] = a;
+                apps.push(a);
             });
         }
-        if (state.assignee !== "all" && ds.assigneeKey) {
-            recs = recs.filter(function (r) { return assigneeOf(r, ds.assigneeKey) === state.assignee; });
+        if (L && !L.error) {
+            L.records.forEach(function (r) {
+                var ref = r[F.auditApp];
+                var a = byId[String(ref && typeof ref === "object" ? ref.ID : ref)];
+                var t = parseDate(r[F.auditTime]);
+                var k = actionKey(r[F.auditAction]);
+                if (a && t && k) a.events.push({ action: k, time: t });
+            });
         }
-        return recs;
+        /* Response received = the application's first "Submitted" audit
+           entry (earliest entry of any kind if none was logged). */
+        apps.forEach(function (a) {
+            var first = null, submitted = null;
+            a.events.forEach(function (e) {
+                if (!first || e.time < first) first = e.time;
+                if (e.action === "submitted" && (!submitted || e.time < submitted)) submitted = e.time;
+            });
+            a.receivedAt = submitted || first;
+        });
+        var emails = [];
+        if (E && !E.error) E.records.forEach(function (r) { emails.push(parseDate(r[F.emailSent])); });
+        model = { apps: apps, emails: emails };
     }
 
     /* ================================================================
-       Aggregation — time buckets
+       Period & filtering
        ================================================================ */
-    function buildBuckets(records, dateKey) {
-        var buckets = [];
-        var now = new Date();
-        var i, start, end;
+    function startOfDay(d) { return new Date(d.getFullYear(), d.getMonth(), d.getDate()); }
+    function addDays(d, n) { return new Date(d.getFullYear(), d.getMonth(), d.getDate() + n); }
+    function fmtDate(d) { return d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear(); }
 
-        function push(s, e, label) { buckets.push({ start: s, end: e, label: label, count: 0 }); }
-
-        if (state.range === "7" || state.range === "30") {
-            var days = parseInt(state.range, 10);
-            for (i = days - 1; i >= 0; i--) {
-                start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i);
-                end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - i + 1);
-                push(start, end, start.getDate() + " " + MONTHS[start.getMonth()]);
-            }
-        } else if (state.range === "90") {
-            var anchor = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 90);
-            for (i = 0; i < 13; i++) {
-                start = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + i * 7);
-                end = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate() + (i + 1) * 7);
-                push(start, end, start.getDate() + " " + MONTHS[start.getMonth()]);
-            }
-        } else {
-            for (i = 11; i >= 0; i--) {
-                start = new Date(now.getFullYear(), now.getMonth() - i, 1);
-                end = new Date(now.getFullYear(), now.getMonth() - i + 1, 1);
-                push(start, end, MONTHS[start.getMonth()] + " '" + String(start.getFullYear()).slice(2));
-            }
+    /* { start, end (exclusive), all, label } */
+    function currentPeriod() {
+        var today = startOfDay(new Date());
+        if (state.view === "daily") {
+            return { start: today, end: addDays(today, 1), all: false, label: "Today · " + fmtDate(today) };
         }
+        if (!state.from && !state.to) return { start: null, end: null, all: true, label: "Till date · as of " + fmtDate(today) };
+        var label = state.from && state.to ? fmtDate(state.from) + " – " + fmtDate(state.to)
+            : state.from ? "From " + fmtDate(state.from) : "Till " + fmtDate(state.to);
+        return { start: state.from, end: state.to ? addDays(state.to, 1) : null, all: false, label: label };
+    }
 
-        if (dateKey) {
-            records.forEach(function (r) {
-                var d = parseDate(r[dateKey]);
-                if (!d) return;
-                for (var b = 0; b < buckets.length; b++) {
-                    if (d >= buckets[b].start && d < buckets[b].end) { buckets[b].count++; break; }
-                }
+    function inPeriod(d, p) {
+        if (p.all) return true;
+        if (!d) return false;
+        return (!p.start || d >= p.start) && (!p.end || d < p.end);
+    }
+
+    function filteredApps() {
+        if (state.assignee === "all") return model.apps;
+        return model.apps.filter(function (a) { return a.assignee === state.assignee; });
+    }
+
+    /* Applications touched in the period (received or acted on) */
+    function activeApps(p) {
+        var apps = filteredApps();
+        if (p.all) return apps;
+        return apps.filter(function (a) {
+            return inPeriod(a.receivedAt, p) || a.events.some(function (e) { return inPeriod(e.time, p); });
+        });
+    }
+
+    /* Approved / Rejected / Sent back:
+       - Till date, no date range: cases whose CURRENT status is that
+         status (matches the Approved/Rejected/Sent Back Cases reports).
+       - Today or a date range: cases that received that action in the
+         period, per the audit log. */
+    function computeKPIs(p) {
+        var apps = filteredApps();
+        var r = {
+            emails: model.emails.filter(function (d) { return inPeriod(d, p); }).length,
+            responses: apps.filter(function (a) { return inPeriod(a.receivedAt, p); }).length
+        };
+        ["approved", "rejected", "sentback"].forEach(function (k) {
+            r[k] = apps.filter(function (a) {
+                if (p.all) return a.status === k;
+                return a.events.some(function (e) { return e.action === k && inPeriod(e.time, p); });
+            }).length;
+        });
+        return r;
+    }
+
+    /* Datasets each KPI depends on under the given period */
+    function kpiSources(key, p) {
+        if (key === "emails") return ["emails"];
+        if (key === "responses" && p.all) return ["applications"];
+        return p.all ? ["applications"] : ["applications", "audit"];
+    }
+
+    function sourceState(keys) {
+        var st = { loading: false, error: false, truncated: false };
+        keys.forEach(function (k) {
+            var ds = state.datasets[k];
+            if (!ds) st.loading = true;
+            else if (ds.error) st.error = true;
+            else if (ds.truncated) st.truncated = true;
+        });
+        return st;
+    }
+
+    /* ================================================================
+       Aggregation — time buckets for the trend
+       ================================================================ */
+    function trendWindow(p) {
+        var today = startOfDay(new Date());
+        if (state.view === "daily") return { start: addDays(today, -6), end: addDays(today, 1), context: true };
+        var end = p.end || addDays(today, 1);
+        var start = p.start;
+        if (!start) {
+            var earliest = null;
+            model.emails.forEach(function (d) { if (d && d < end && (!earliest || d < earliest)) earliest = d; });
+            filteredApps().forEach(function (a) {
+                if (a.receivedAt && a.receivedAt < end && (!earliest || a.receivedAt < earliest)) earliest = a.receivedAt;
             });
+            start = earliest ? startOfDay(earliest) : addDays(end, -30);
+        }
+        if ((end - start) / DAY < 7) start = addDays(end, -7);
+        return { start: start, end: end };
+    }
+
+    function buildBuckets(win) {
+        var buckets = [], s, e;
+        var days = Math.round((win.end - win.start) / DAY);
+        if (days <= 31) {
+            for (s = win.start; s < win.end; s = addDays(s, 1)) {
+                buckets.push({ start: s, end: addDays(s, 1), label: s.getDate() + " " + MONTHS[s.getMonth()] });
+            }
+            buckets.unit = "Daily";
+        } else if (days <= 182) {
+            for (s = win.start; s < win.end; s = e) {
+                e = addDays(s, 7);
+                if (e > win.end) e = win.end;
+                buckets.push({ start: s, end: e, label: s.getDate() + " " + MONTHS[s.getMonth()] });
+            }
+            buckets.unit = "Weekly";
+        } else {
+            for (s = new Date(win.start.getFullYear(), win.start.getMonth(), 1); s < win.end; s = e) {
+                e = new Date(s.getFullYear(), s.getMonth() + 1, 1);
+                buckets.push({ start: s, end: e, label: MONTHS[s.getMonth()] + " '" + String(s.getFullYear()).slice(2) });
+            }
+            buckets.unit = "Monthly";
         }
         return buckets;
     }
 
-    function granularityLabel() {
-        if (state.range === "7") return "Daily · last 7 days";
-        if (state.range === "30") return "Daily · last 30 days";
-        if (state.range === "90") return "Weekly · last 90 days";
-        return "Monthly · last 12 months";
+    function countInBuckets(dates, buckets) {
+        var counts = buckets.map(function () { return 0; });
+        dates.forEach(function (d) {
+            if (!d) return;
+            for (var i = 0; i < buckets.length; i++) {
+                if (d >= buckets[i].start && d < buckets[i].end) { counts[i]++; break; }
+            }
+        });
+        return counts;
     }
 
     /* ================================================================
@@ -386,27 +435,16 @@
         if (text != null) d.textContent = text;
         return d;
     }
-    function iconSvg(name, size) {
+    function iconSvg(name) {
         var s = svgEl("svg", {
-            viewBox: "0 0 24 24", width: size || 15, height: size || 15,
+            viewBox: "0 0 24 24", width: 15, height: 15,
             fill: "none", stroke: "currentColor", "stroke-width": "2",
             "stroke-linecap": "round", "stroke-linejoin": "round", "aria-hidden": "true"
         });
         (ICONS[name] || []).forEach(function (d) { s.appendChild(svgEl("path", { d: d })); });
         return s;
     }
-
-    function cellText(v) {
-        if (v == null) return "";
-        if (typeof v === "string") return v;
-        if (typeof v === "number" || typeof v === "boolean") return String(v);
-        if (Array.isArray(v)) return v.map(cellText).filter(Boolean).join(", ");
-        if (typeof v === "object") {
-            return v.zc_display_value || v.display_value ||
-                [v.first_name, v.last_name].filter(Boolean).join(" ") || "";
-        }
-        return "";
-    }
+    function pct(n, total) { return total ? Math.round((n / total) * 100) + "%" : "0%"; }
 
     /* Tooltip ------------------------------------------------------- */
     function showTip(title, rows, x, y) {
@@ -432,28 +470,42 @@
             el.tip.appendChild(row);
         });
         el.tip.hidden = false;
-        moveTip(x, y);
-    }
-    function moveTip(x, y) {
-        var pad = 12, r = el.tip.getBoundingClientRect();
-        var nx = Math.min(x + pad, window.innerWidth - r.width - 8);
-        var ny = y - r.height - pad;
+        var pad = 12, rect = el.tip.getBoundingClientRect();
+        var nx = Math.min(x + pad, window.innerWidth - rect.width - 8);
+        var ny = y - rect.height - pad;
         if (ny < 8) ny = y + pad;
         el.tip.style.left = Math.max(8, nx) + "px";
         el.tip.style.top = ny + "px";
     }
     function hideTip() { el.tip.hidden = true; }
 
+    function emptyState(body, text) {
+        body.appendChild(div("chart-empty", text));
+    }
+
+    /* Common loading / error guard for chart cards */
+    function guard(body, keys) {
+        var st = sourceState(keys);
+        if (st.error) {
+            var failed = keys.filter(function (k) { return state.datasets[k] && state.datasets[k].error; })
+                .map(function (k) { return CONFIG.reports[k].name; });
+            emptyState(body, "Couldn't load " + failed.join(", "));
+            return false;
+        }
+        if (st.loading) { emptyState(body, "Loading…"); return false; }
+        return true;
+    }
+
     /* ================================================================
        Render — KPI tiles
        ================================================================ */
-    function renderKPIs() {
+    function renderKPIs(p) {
+        el.kpiTitle.textContent = state.view === "daily" ? "Daily dashboard" : "Cumulative dashboard";
+        el.kpiPeriod.textContent = p.label + (state.assignee !== "all" ? " · " + state.assignee : "");
         el.kpiGrid.textContent = "";
+        var values = computeKPIs(p);
         TILES.forEach(function (t) {
-            var ds = state.datasets[t.ds];
-            var loading = !ds;
-            if (loading) ds = { records: [], error: false, truncated: false, dateKey: null, assigneeKey: null };
-            var recs = loading ? [] : filteredRecords(ds);
+            var st = sourceState(kpiSources(t.key, p));
             var tile = div("kpi-tile");
             tile.setAttribute("role", "group");
 
@@ -464,167 +516,19 @@
             top.appendChild(div("kpi-label", t.label));
             tile.appendChild(top);
 
-            var valueText = loading ? "…" : ds.error ? "—" : fmt(recs.length) + (ds.truncated ? "+" : "");
-            tile.appendChild(div("kpi-value" + (loading ? " is-loading" : ""), valueText));
+            var valueText = st.loading ? "…" : st.error ? "—" : fmt(values[t.key]) + (st.truncated ? "+" : "");
+            tile.appendChild(div("kpi-value" + (st.loading ? " is-loading" : ""), valueText));
             tile.setAttribute("aria-label", t.label + ": " + valueText);
 
-            if (loading) {
-                tile.appendChild(div("kpi-note", "Loading…"));
-            } else if (ds.error) {
-                tile.appendChild(div("kpi-note is-error", "Couldn't load report"));
-            } else if (state.range !== "all" && !ds.dateKey) {
-                tile.appendChild(div("kpi-note", "All time (no date field)"));
-            } else if (state.assignee !== "all" && !ds.assigneeKey) {
-                tile.appendChild(div("kpi-note", "All assignees (no assignee field)"));
-            } else if (t.note) {
-                tile.appendChild(div("kpi-note", t.note));
-            }
-
-            if (t.spark && !loading && !ds.error && ds.dateKey) {
-                tile.appendChild(renderSparkline(ds));
-            }
+            var note = null, noteCls = "kpi-note";
+            if (st.error) { note = "Couldn't load report"; noteCls += " is-error"; }
+            else if (st.loading) note = "Loading…";
+            else if (t.key === "emails" && state.assignee !== "all") note = "All assignees (emails have no assignee)";
+            else if (st.truncated) note = "Record limit reached";
+            else if (t.note) note = t.note;
+            if (note) tile.appendChild(div(noteCls, note));
             el.kpiGrid.appendChild(tile);
         });
-    }
-
-    function renderSparkline(ds) {
-        var saved = state.range;
-        state.range = "all";                       // sparkline is always 12 months
-        var buckets = buildBuckets(ds.records, ds.dateKey);
-        state.range = saved;
-
-        var w = 120, h = 26, max = 1;
-        buckets.forEach(function (b) { max = Math.max(max, b.count); });
-        var box = div("kpi-spark");
-        var s = svgEl("svg", { class: "viz-svg", width: w, height: h, "aria-hidden": "true" });
-        var pts = buckets.map(function (b, i) {
-            var x = (i / (buckets.length - 1)) * (w - 8) + 4;
-            var y = h - 4 - (b.count / max) * (h - 9);
-            return [x, y];
-        });
-        var line = svgEl("polyline", {
-            class: "spark-line",
-            points: pts.map(function (p) { return p[0] + "," + p[1]; }).join(" ")
-        });
-        s.appendChild(line);
-        var last = pts[pts.length - 1];
-        s.appendChild(svgEl("circle", { class: "spark-dot", cx: last[0], cy: last[1], r: 3 }));
-        box.appendChild(s);
-        return box;
-    }
-
-    /* ================================================================
-       Render — donut (status distribution)
-       ================================================================ */
-    function statusCounts() {
-        return STATUSES.map(function (st) {
-            var ds = state.datasets[st.key];
-            return {
-                key: st.key, label: st.label, cls: st.cls,
-                count: ds && !ds.error ? filteredRecords(ds).length : 0,
-                error: !!(ds && ds.error),
-                loading: !ds
-            };
-        });
-    }
-
-    function renderDonut() {
-        el.donutBody.textContent = "";
-        var items = statusCounts();
-        var total = items.reduce(function (a, b) { return a + b.count; }, 0);
-
-        if (state.views.donut === "table") {
-            el.donutBody.appendChild(buildAggTable(
-                ["Status", "Cases", "Share"],
-                items.map(function (it) {
-                    return [it.label, fmt(it.count), total ? Math.round((it.count / total) * 100) + "%" : "0%"];
-                })
-            ));
-            return;
-        }
-
-        if (!total) {
-            var anyLoading = items.some(function (it) { return it.loading; });
-            el.donutBody.appendChild(div("chart-empty", anyLoading ? "Loading…" : "No cases in this period"));
-            return;
-        }
-
-        var size = 188, cx = size / 2, cy = size / 2, R = 86, r = 57;
-        var wrap = div("donut-wrap");
-        var box = div("donut-svg-box");
-        var s = svgEl("svg", {
-            class: "viz-svg", width: size, height: size, role: "img",
-            "aria-label": "Case status distribution, " + fmt(total) + " cases total"
-        });
-
-        var segs = [];
-        var angle = -Math.PI / 2;
-        items.forEach(function (it) {
-            if (!it.count) return;
-            var frac = it.count / total;
-            var a0 = angle, a1 = angle + frac * Math.PI * 2;
-            angle = a1;
-            var path = svgEl("path", {
-                d: donutArc(cx, cy, R, r, a0, frac >= 0.9999 ? a0 + Math.PI * 1.9999 : a1),
-                class: "donut-seg seg-" + it.cls,
-                tabindex: "0",
-                role: "img",
-                "aria-label": it.label + ": " + fmt(it.count) + " cases (" + Math.round(frac * 100) + "%)"
-            });
-            var pct = Math.round(frac * 100);
-            function activate(x, y) {
-                segs.forEach(function (p) { p.style.opacity = p === path ? "1" : "0.35"; });
-                centerBig.textContent = fmt(it.count);
-                centerSmall.textContent = it.label + " · " + pct + "%";
-                showTip(it.label, [{ swatch: "sw-" + it.cls, value: fmt(it.count) + " cases", label: pct + "%" }], x, y);
-            }
-            function deactivate() {
-                segs.forEach(function (p) { p.style.opacity = ""; });
-                centerBig.textContent = fmt(total);
-                centerSmall.textContent = "total cases";
-                hideTip();
-            }
-            path.addEventListener("pointermove", function (ev) { activate(ev.clientX, ev.clientY); });
-            path.addEventListener("pointerleave", deactivate);
-            path.addEventListener("focus", function () {
-                var b = path.getBoundingClientRect();
-                activate(b.left + b.width / 2, b.top);
-            });
-            path.addEventListener("blur", deactivate);
-            segs.push(path);
-            s.appendChild(path);
-        });
-
-        box.appendChild(s);
-        var center = div("donut-center");
-        var centerBig = div("big", fmt(total));
-        var centerSmall = div("small", "total cases");
-        center.appendChild(centerBig);
-        center.appendChild(centerSmall);
-        box.appendChild(center);
-        wrap.appendChild(box);
-
-        /* legend with visible counts (relief for low-contrast hues) */
-        var legend = div("donut-legend");
-        items.forEach(function (it) {
-            var row = div("legend-row");
-            row.appendChild(div("legend-swatch sw-" + it.cls));
-            row.appendChild(div("legend-name", it.label + (it.error ? " (failed to load)" : "")));
-            row.appendChild(div("legend-count", it.loading ? "…" : it.error ? "—" : fmt(it.count)));
-            row.appendChild(div("legend-pct", total && !it.error && !it.loading ? Math.round((it.count / total) * 100) + "%" : ""));
-            legend.appendChild(row);
-        });
-        wrap.appendChild(legend);
-        el.donutBody.appendChild(wrap);
-    }
-
-    function donutArc(cx, cy, R, r, a0, a1) {
-        var large = (a1 - a0) > Math.PI ? 1 : 0;
-        function pt(rad, a) { return (cx + rad * Math.cos(a)).toFixed(2) + " " + (cy + rad * Math.sin(a)).toFixed(2); }
-        return "M " + pt(R, a0) +
-            " A " + R + " " + R + " 0 " + large + " 1 " + pt(R, a1) +
-            " L " + pt(r, a1) +
-            " A " + r + " " + r + " 0 " + large + " 0 " + pt(r, a0) + " Z";
     }
 
     /* ================================================================
@@ -634,73 +538,64 @@
         var target = Math.max(1, dataMax) / 4;
         var p = Math.pow(10, Math.floor(Math.log10(target)));
         var f = target / p;
-        var step = (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p;
+        var step = Math.max(1, (f <= 1 ? 1 : f <= 2 ? 2 : f <= 5 ? 5 : 10) * p);
         while (step * 4 < dataMax) step *= 2;
         return { max: step * 4, step: step };
     }
 
     var TREND_SERIES = [
         { key: "emails", name: "Emails sent", lineCls: "trend-line s2", dotCls: "trend-dot s2", hoverCls: "hover-dot s2", sw: "sw-series2" },
-        { key: "main",   name: "Responses",   lineCls: "trend-line",    dotCls: "trend-dot",    hoverCls: "hover-dot",    sw: "sw-series1" }
+        { key: "responses", name: "Responses received", lineCls: "trend-line", dotCls: "trend-dot", hoverCls: "hover-dot", sw: "sw-series1" }
     ];
 
-    function renderTrend() {
+    function renderTrend(p) {
         el.trendBody.textContent = "";
-        el.trendSub.textContent = granularityLabel();
+        var win = trendWindow(p);
+        var buckets = buildBuckets(win);
+        el.trendSub.textContent = buckets.unit + " · " + fmtDate(win.start) + " – " + fmtDate(addDays(win.end, -1)) +
+            (win.context ? " (last 7 days)" : "") +
+            (state.assignee !== "all" ? " · emails not assignee-specific" : "");
+        if (!guard(el.trendBody, ["emails", "applications", "audit"])) return;
 
-        var loadingAny = false, series = [];
-        TREND_SERIES.forEach(function (d) {
-            var ds = state.datasets[d.key];
-            if (!ds) { loadingAny = true; return; }
-            if (ds.error || !ds.dateKey) return;
-            series.push({ def: d, buckets: buildBuckets(filteredRecords(ds), ds.dateKey) });
+        var series = TREND_SERIES.map(function (d) {
+            var dates = d.key === "emails" ? model.emails
+                : filteredApps().map(function (a) { return a.receivedAt; });
+            return { def: d, counts: countInBuckets(dates, buckets) };
         });
 
-        if (!series.length) {
-            el.trendBody.appendChild(div("chart-empty",
-                loadingAny ? "Loading…" : "No date field available to draw the time trend"));
-            return;
-        }
-
         if (state.views.trend === "table") {
-            var headers = ["Period"].concat(series.map(function (sr) { return sr.def.name; }));
-            var rows = series[0].buckets.map(function (b, i) {
-                return [b.label].concat(series.map(function (sr) { return fmt(sr.buckets[i].count); }));
-            });
-            el.trendBody.appendChild(buildAggTable(headers, rows));
+            el.trendBody.appendChild(buildAggTable(
+                ["Period"].concat(series.map(function (sr) { return sr.def.name; })),
+                buckets.map(function (b, i) {
+                    return [b.label].concat(series.map(function (sr) { return fmt(sr.counts[i]); }));
+                })
+            ));
             return;
         }
 
         var dataMax = 0;
-        series.forEach(function (sr) {
-            sr.buckets.forEach(function (b) { dataMax = Math.max(dataMax, b.count); });
-        });
-        if (!dataMax) {
-            el.trendBody.appendChild(div("chart-empty", "No activity in this period"));
-            return;
-        }
+        series.forEach(function (sr) { sr.counts.forEach(function (c) { dataMax = Math.max(dataMax, c); }); });
+        if (!dataMax) { emptyState(el.trendBody, "No emails or responses in this period"); return; }
 
-        /* legend (2+ series -> always present) */
-        if (series.length > 1) {
-            var legend = div("chart-legend");
-            series.forEach(function (sr) {
-                var e = div("legend-entry");
-                e.appendChild(div("legend-key " + sr.def.sw));
-                e.appendChild(div("legend-label", sr.def.name));
-                legend.appendChild(e);
-            });
-            el.trendBody.appendChild(legend);
-        }
+        var legend = div("chart-legend");
+        series.forEach(function (sr) {
+            var e = div("legend-entry");
+            e.appendChild(div("legend-key " + sr.def.sw));
+            e.appendChild(div("legend-label", sr.def.name));
+            legend.appendChild(e);
+        });
+        el.trendBody.appendChild(legend);
 
         var W = Math.max(320, el.trendBody.clientWidth || 520);
         var H = 236;
-        var m = { t: 14, r: 66, b: 26, l: 40 };
+        var m = { t: 14, r: 40, b: 26, l: 40 };
         var pw = W - m.l - m.r, ph = H - m.t - m.b;
         var scale = axisScale(dataMax);
+        var n = buckets.length;
 
         var s = svgEl("svg", {
             class: "viz-svg", width: W, height: H, tabindex: "0", role: "img",
-            "aria-label": "Emails sent vs responses received, " + granularityLabel().toLowerCase()
+            "aria-label": "Emails sent vs responses received, " + el.trendSub.textContent
         });
 
         for (var g = 0; g <= 4; g++) {
@@ -713,41 +608,35 @@
         }
         s.appendChild(svgEl("line", { class: "axis-line", x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph }));
 
-        var n = series[0].buckets.length;
         function px(i) { return m.l + (n === 1 ? pw / 2 : (i / (n - 1)) * pw); }
         function py(c) { return m.t + ph - (c / scale.max) * ph; }
-        series.forEach(function (sr) {
-            sr.pts = sr.buckets.map(function (b, i) { return { x: px(i), y: py(b.count), b: b }; });
-        });
 
         /* x labels (skip to avoid collisions, anchored to the last) */
-        var maxLabels = Math.max(2, Math.floor(pw / 58));
-        var skip = Math.ceil(n / maxLabels);
-        series[0].pts.forEach(function (p, i) {
+        var skip = Math.ceil(n / Math.max(2, Math.floor(pw / 58)));
+        buckets.forEach(function (b, i) {
             if ((n - 1 - i) % skip !== 0) return;
-            var t = svgEl("text", { class: "axis-tick", x: p.x, y: m.t + ph + 17, "text-anchor": "middle" });
-            t.textContent = p.b.label;
+            var t = svgEl("text", { class: "axis-tick", x: px(i), y: m.t + ph + 17, "text-anchor": "middle" });
+            t.textContent = b.label;
             s.appendChild(t);
         });
 
         /* lines + end markers + end labels (nudged apart if they collide) */
-        var endYs = series.map(function (sr) { return sr.pts[n - 1].y + 4; });
-        if (endYs.length === 2 && Math.abs(endYs[0] - endYs[1]) < 14) {
+        var endYs = series.map(function (sr) { return py(sr.counts[n - 1]) + 4; });
+        if (Math.abs(endYs[0] - endYs[1]) < 14) {
             var gap = (14 - Math.abs(endYs[0] - endYs[1])) / 2;
             if (endYs[0] <= endYs[1]) { endYs[0] -= gap; endYs[1] += gap; }
             else { endYs[1] -= gap; endYs[0] += gap; }
         }
         series.forEach(function (sr, si) {
-            var lineD = sr.pts.map(function (p, i) { return (i ? "L" : "M") + p.x.toFixed(1) + " " + p.y.toFixed(1); }).join(" ");
-            s.appendChild(svgEl("path", { class: sr.def.lineCls, d: lineD }));
-            var last = sr.pts[n - 1];
-            s.appendChild(svgEl("circle", { class: sr.def.dotCls, cx: last.x, cy: last.y, r: 4.5 }));
-            var endLab = svgEl("text", { class: "end-label", x: last.x + 9, y: endYs[si] });
-            endLab.textContent = fmt(last.b.count);
+            var d = sr.counts.map(function (c, i) { return (i ? "L" : "M") + px(i).toFixed(1) + " " + py(c).toFixed(1); }).join(" ");
+            s.appendChild(svgEl("path", { class: sr.def.lineCls, d: d }));
+            s.appendChild(svgEl("circle", { class: sr.def.dotCls, cx: px(n - 1), cy: py(sr.counts[n - 1]), r: 4 }));
+            var endLab = svgEl("text", { class: "end-label", x: px(n - 1) + 9, y: endYs[si] });
+            endLab.textContent = fmt(sr.counts[n - 1]);
             s.appendChild(endLab);
         });
 
-        /* hover layer: crosshair + one tooltip listing every series */
+        /* hover layer: crosshair + one tooltip listing both series */
         var crossh = svgEl("line", { class: "crosshair", y1: m.t, y2: m.t + ph, x1: 0, x2: 0, visibility: "hidden" });
         s.appendChild(crossh);
         series.forEach(function (sr) {
@@ -758,19 +647,17 @@
         function focusIndex(i, clientX, clientY) {
             i = Math.max(0, Math.min(n - 1, i));
             state.trendFocus = i;
-            var x = series[0].pts[i].x;
+            var x = px(i);
             crossh.setAttribute("x1", x); crossh.setAttribute("x2", x);
             crossh.setAttribute("visibility", "visible");
             series.forEach(function (sr) {
-                sr.hoverDot.setAttribute("cx", sr.pts[i].x);
-                sr.hoverDot.setAttribute("cy", sr.pts[i].y);
+                sr.hoverDot.setAttribute("cx", x);
+                sr.hoverDot.setAttribute("cy", py(sr.counts[i]));
                 sr.hoverDot.setAttribute("visibility", "visible");
             });
             var rect = s.getBoundingClientRect();
-            showTip(series[0].buckets[i].label,
-                series.map(function (sr) {
-                    return { swatch: sr.def.sw, value: fmt(sr.buckets[i].count), label: sr.def.name };
-                }),
+            showTip(buckets[i].label,
+                series.map(function (sr) { return { swatch: sr.def.sw, value: fmt(sr.counts[i]), label: sr.def.name }; }),
                 clientX != null ? clientX : rect.left + x,
                 clientY != null ? clientY : rect.top + m.t);
         }
@@ -782,10 +669,9 @@
 
         var overlay = svgEl("rect", { x: m.l, y: m.t, width: pw, height: ph, fill: "transparent" });
         overlay.addEventListener("pointermove", function (ev) {
-            var rect = s.getBoundingClientRect();
-            var x = ev.clientX - rect.left;
+            var x = ev.clientX - s.getBoundingClientRect().left;
             var best = 0, bd = Infinity;
-            series[0].pts.forEach(function (p, i) { var d = Math.abs(p.x - x); if (d < bd) { bd = d; best = i; } });
+            for (var i = 0; i < n; i++) { var dd = Math.abs(px(i) - x); if (dd < bd) { bd = dd; best = i; } }
             focusIndex(best, ev.clientX, ev.clientY);
         });
         overlay.addEventListener("pointerleave", clearFocus);
@@ -803,83 +689,171 @@
     }
 
     /* ================================================================
-       Render — applications by assignee (horizontal bars)
+       Render — donut (current status of cases active in the period)
        ================================================================ */
-    function hBarPath(x, y, w, h, r) {
-        if (w <= r + 1) return "M" + x + " " + y + " h" + Math.max(w, 1.5) + " v" + h + " h-" + Math.max(w, 1.5) + " Z";
-        return "M" + x + " " + y +
-            " h" + (w - r) +
-            " a" + r + " " + r + " 0 0 1 " + r + " " + r +
-            " v" + (h - 2 * r) +
-            " a" + r + " " + r + " 0 0 1 " + (-r) + " " + r +
-            " h" + (-(w - r)) + " Z";
+    function scopeText(p) {
+        return p.all ? "All cases · current status" : "Cases received or acted on in this period · current status";
     }
 
-    function renderAssignee() {
-        el.assigneeBody.textContent = "";
-        var ds = state.datasets.main;
-        if (!ds) {
-            el.assigneeSub.textContent = "Case load across assignees";
-            el.assigneeBody.appendChild(div("chart-empty", "Loading…"));
-            return;
-        }
-        if (ds.error) {
-            el.assigneeSub.textContent = "";
-            el.assigneeBody.appendChild(div("chart-empty", "Couldn't load " + CONFIG.reports.main));
-            return;
-        }
-        if (!ds.assigneeKey) {
-            el.assigneeSub.textContent = "Case load across assignees";
-            el.assigneeBody.appendChild(div("chart-empty", "No assignee field detected in the application report"));
-            return;
-        }
+    function renderDonut(p) {
+        el.donutBody.textContent = "";
+        el.donutSub.textContent = scopeText(p);
+        if (!guard(el.donutBody, p.all ? ["applications"] : ["applications", "audit"])) return;
 
-        var recs = filteredRecords(ds);
-        var counts = {};
-        recs.forEach(function (r) {
-            var a = assigneeOf(r, ds.assigneeKey);
-            counts[a] = (counts[a] || 0) + 1;
+        var apps = activeApps(p);
+        var items = STATUSES.map(function (st) {
+            return {
+                key: st.key, label: st.label,
+                count: apps.filter(function (a) { return a.status === st.key; }).length
+            };
         });
-        var entries = Object.keys(counts).map(function (k) { return { name: k, count: counts[k] }; });
-        entries.sort(function (a, b) { return b.count - a.count; });
+        var total = apps.length;
 
-        if (!entries.length) {
-            el.assigneeSub.textContent = "0 applications";
-            el.assigneeBody.appendChild(div("chart-empty", "No applications in this period"));
+        if (state.views.donut === "table") {
+            el.donutBody.appendChild(buildAggTable(
+                ["Status", "Cases", "Share"],
+                items.map(function (it) { return [it.label, fmt(it.count), pct(it.count, total)]; })
+            ));
             return;
         }
+        if (!total) { emptyState(el.donutBody, "No cases in this period"); return; }
+
+        var size = 188, cx = size / 2, cy = size / 2, R = 86, r = 57;
+        var wrap = div("donut-wrap");
+        var box = div("donut-svg-box");
+        var s = svgEl("svg", {
+            class: "viz-svg", width: size, height: size, role: "img",
+            "aria-label": "Case status, " + fmt(total) + " cases"
+        });
+        var center = div("donut-center");
+        var centerBig = div("big", fmt(total));
+        var centerSmall = div("small", "cases");
+        center.appendChild(centerBig);
+        center.appendChild(centerSmall);
+
+        var segs = [];
+        var angle = -Math.PI / 2;
+        items.forEach(function (it) {
+            if (!it.count) return;
+            var frac = it.count / total;
+            var a0 = angle, a1 = angle + frac * Math.PI * 2;
+            angle = a1;
+            var share = pct(it.count, total);
+            var path = svgEl("path", {
+                d: donutArc(cx, cy, R, r, a0, frac >= 0.9999 ? a0 + Math.PI * 1.9999 : a1),
+                class: "donut-seg seg-" + it.key,
+                tabindex: "0",
+                role: "img",
+                "aria-label": it.label + ": " + fmt(it.count) + " cases (" + share + ")"
+            });
+            function activate(x, y) {
+                segs.forEach(function (q) { q.style.opacity = q === path ? "1" : "0.35"; });
+                centerBig.textContent = fmt(it.count);
+                centerSmall.textContent = it.label + " · " + share;
+                showTip(it.label, [{ swatch: "sw-" + it.key, value: fmt(it.count) + " cases", label: share }], x, y);
+            }
+            function deactivate() {
+                segs.forEach(function (q) { q.style.opacity = ""; });
+                centerBig.textContent = fmt(total);
+                centerSmall.textContent = "cases";
+                hideTip();
+            }
+            path.addEventListener("pointermove", function (ev) { activate(ev.clientX, ev.clientY); });
+            path.addEventListener("pointerleave", deactivate);
+            path.addEventListener("focus", function () {
+                var b = path.getBoundingClientRect();
+                activate(b.left + b.width / 2, b.top);
+            });
+            path.addEventListener("blur", deactivate);
+            segs.push(path);
+            s.appendChild(path);
+        });
+
+        box.appendChild(s);
+        box.appendChild(center);
+        wrap.appendChild(box);
+
+        /* legend with visible counts (relief for low-contrast hues) */
+        var legend = div("donut-legend");
+        items.forEach(function (it) {
+            var row = div("legend-row");
+            row.appendChild(div("legend-swatch sw-" + it.key));
+            row.appendChild(div("legend-name", it.label));
+            row.appendChild(div("legend-count", fmt(it.count)));
+            row.appendChild(div("legend-pct", pct(it.count, total)));
+            legend.appendChild(row);
+        });
+        wrap.appendChild(legend);
+        el.donutBody.appendChild(wrap);
+    }
+
+    function donutArc(cx, cy, R, r, a0, a1) {
+        var large = (a1 - a0) > Math.PI ? 1 : 0;
+        function pt(rad, a) { return (cx + rad * Math.cos(a)).toFixed(2) + " " + (cy + rad * Math.sin(a)).toFixed(2); }
+        return "M " + pt(R, a0) +
+            " A " + R + " " + R + " 0 " + large + " 1 " + pt(R, a1) +
+            " L " + pt(r, a1) +
+            " A " + r + " " + r + " 0 " + large + " 0 " + pt(r, a0) + " Z";
+    }
+
+    /* ================================================================
+       Render — cases by assignee (horizontal bars stacked by status)
+       ================================================================ */
+    function renderAssignee(p) {
+        el.assigneeBody.textContent = "";
+        el.assigneeSub.textContent = scopeText(p);
+        if (!guard(el.assigneeBody, p.all ? ["applications"] : ["applications", "audit"])) return;
+
+        var apps = activeApps(p);
+        var groups = {};
+        apps.forEach(function (a) {
+            var g = groups[a.assignee] || (groups[a.assignee] = { name: a.assignee, total: 0, by: {} });
+            g.total++;
+            g.by[a.status] = (g.by[a.status] || 0) + 1;
+        });
+        var rows = Object.keys(groups).map(function (k) { return groups[k]; });
+        rows.sort(function (a, b) { return b.total - a.total || a.name.localeCompare(b.name); });
 
         /* fold the tail past 7 into "Other" — never generate more marks */
-        if (entries.length > 8) {
-            var head = entries.slice(0, 7);
-            var rest = entries.slice(7).reduce(function (a, e) { return a + e.count; }, 0);
-            head.push({ name: "Other", count: rest });
-            entries = head;
+        if (rows.length > 8) {
+            var other = { name: "Other", total: 0, by: {} };
+            rows.slice(7).forEach(function (g) {
+                other.total += g.total;
+                Object.keys(g.by).forEach(function (k) { other.by[k] = (other.by[k] || 0) + g.by[k]; });
+            });
+            rows = rows.slice(0, 7).concat([other]);
         }
-        var total = recs.length;
-        el.assigneeSub.textContent = fmt(total) + " applications · " + ds.assigneeKey.replace(/_/g, " ");
 
         if (state.views.assignee === "table") {
             el.assigneeBody.appendChild(buildAggTable(
-                ["Assignee", "Applications", "Share"],
-                entries.map(function (e) {
-                    return [e.name, fmt(e.count), Math.round((e.count / total) * 100) + "%"];
+                ["Assignee"].concat(STATUSES.map(function (st) { return st.label; }), ["Total"]),
+                rows.map(function (g) {
+                    return [g.name].concat(STATUSES.map(function (st) { return fmt(g.by[st.key] || 0); }), [fmt(g.total)]);
                 })
             ));
             return;
         }
+        if (!rows.length) { emptyState(el.assigneeBody, "No cases in this period"); return; }
+
+        var legend = div("chart-legend");
+        STATUSES.forEach(function (st) {
+            var e = div("legend-entry");
+            e.appendChild(div("legend-key is-box sw-" + st.key));
+            e.appendChild(div("legend-label", st.label));
+            legend.appendChild(e);
+        });
+        el.assigneeBody.appendChild(legend);
 
         var W = Math.max(320, el.assigneeBody.clientWidth || 640);
         var rowH = 34, barH = 18;
-        var m = { t: 6, r: 64, b: 26, l: Math.min(170, Math.max(90, Math.round(W * 0.22))) };
-        var H = m.t + entries.length * rowH + m.b;
+        var m = { t: 4, r: 48, b: 26, l: Math.min(170, Math.max(90, Math.round(W * 0.22))) };
+        var H = m.t + rows.length * rowH + m.b;
         var pw = W - m.l - m.r;
-        var maxCount = entries[0].count;
-        var scale = axisScale(maxCount);
+        var scale = axisScale(rows[0].total);
 
         var s = svgEl("svg", {
             class: "viz-svg", width: W, height: H, role: "img",
-            "aria-label": "Applications by assignee, " + fmt(total) + " total"
+            "aria-label": "Cases by assignee, stacked by status"
         });
 
         for (var g = 0; g <= 4; g++) {
@@ -890,197 +864,66 @@
             tick.textContent = fmt(xv);
             s.appendChild(tick);
         }
-        s.appendChild(svgEl("line", { class: "axis-line", x1: m.l, x2: m.l, y1: m.t, y2: H - m.b }));
 
-        entries.forEach(function (e, i) {
+        rows.forEach(function (row, i) {
             var y = m.t + i * rowH + (rowH - barH) / 2;
-            var bw = (e.count / scale.max) * pw;
-            var pct = Math.round((e.count / total) * 100);
+            var hit = svgEl("rect", {
+                class: "row-hit", x: 0, y: m.t + i * rowH, width: W, height: rowH, rx: 6,
+                tabindex: "0", role: "img",
+                "aria-label": row.name + ": " + fmt(row.total) + " cases — " + STATUSES.map(function (st) {
+                    return st.label + " " + (row.by[st.key] || 0);
+                }).join(", ")
+            });
+            s.appendChild(hit);
 
             var name = svgEl("text", { class: "bar-name", x: m.l - 8, y: y + barH / 2 + 4, "text-anchor": "end" });
-            name.textContent = e.name.length > 22 ? e.name.slice(0, 21) + "…" : e.name;
+            name.textContent = row.name.length > 22 ? row.name.slice(0, 21) + "…" : row.name;
             s.appendChild(name);
 
-            var bar = svgEl("path", {
-                d: hBarPath(m.l, y, bw, barH, 4),
-                class: "assignee-bar",
-                tabindex: "0",
-                role: "img",
-                "aria-label": e.name + ": " + fmt(e.count) + " applications (" + pct + "%)"
+            var x = m.l;
+            STATUSES.forEach(function (st) {
+                var c = row.by[st.key] || 0;
+                if (!c) return;
+                var w = (c / scale.max) * pw;
+                s.appendChild(svgEl("rect", { class: "stack-seg seg-" + st.key, x: x, y: y, width: w, height: barH, "pointer-events": "none" }));
+                x += w;
             });
-            function activate(x2, y2) {
-                bar.style.opacity = "0.8";
-                showTip(e.name, [{ swatch: "sw-series1", value: fmt(e.count), label: pct + "% of total" }], x2, y2);
-            }
-            function deactivate() { bar.style.opacity = ""; hideTip(); }
-            bar.addEventListener("pointermove", function (ev) { activate(ev.clientX, ev.clientY); });
-            bar.addEventListener("pointerleave", deactivate);
-            bar.addEventListener("focus", function () {
-                var b = bar.getBoundingClientRect();
-                activate(b.left + b.width / 2, b.top);
-            });
-            bar.addEventListener("blur", deactivate);
-            s.appendChild(bar);
-
-            var val = svgEl("text", { class: "bar-value", x: m.l + bw + 7, y: y + barH / 2 + 4 });
-            val.textContent = fmt(e.count);
+            var val = svgEl("text", { class: "bar-value", x: x + 7, y: y + barH / 2 + 4 });
+            val.textContent = fmt(row.total);
             s.appendChild(val);
+
+            function tip(cx, cy) {
+                showTip(row.name + " · " + fmt(row.total) + " cases",
+                    STATUSES.filter(function (st) { return row.by[st.key]; }).map(function (st) {
+                        return { swatch: "sw-" + st.key, value: fmt(row.by[st.key]), label: st.label };
+                    }), cx, cy);
+            }
+            hit.addEventListener("pointermove", function (ev) { tip(ev.clientX, ev.clientY); });
+            hit.addEventListener("pointerleave", hideTip);
+            hit.addEventListener("focus", function () {
+                var b = hit.getBoundingClientRect();
+                tip(b.left + m.l, b.top);
+            });
+            hit.addEventListener("blur", hideTip);
         });
+        s.appendChild(svgEl("line", { class: "axis-line", x1: m.l, x2: m.l, y1: m.t, y2: H - m.b }));
 
         el.assigneeBody.appendChild(s);
-    }
-
-    /* ================================================================
-       Render — applications table
-       ================================================================ */
-    function normalizeStatus(s) {
-        if (!s) return null;
-        var v = String(s).toLowerCase();
-        if (/resubmit/.test(v)) return "resubmitted";
-        if (/sent.?back|send.?back|return/.test(v)) return "sentback";
-        if (/approv/.test(v)) return "approved";
-        if (/reject|declin/.test(v)) return "rejected";
-        if (/pend|progress|review|await|submit|open/.test(v)) return "pending";
-        return null;
-    }
-
-    function pickColumns(records) {
-        if (!records.length) return [];
-        var keys = Object.keys(records[0]).filter(function (k) {
-            return k !== "ID" && !/^\$/.test(k);
-        });
-        var cols = [], used = {};
-        function take(re, max) {
-            var got = 0;
-            keys.forEach(function (k) {
-                if (got >= max || used[k]) return;
-                if (re.test(k) && cellText(records[0][k]) !== "") { cols.push(k); used[k] = true; got++; }
-            });
-        }
-        take(/name|organization|org|company|applicant|title|partner/i, 2);
-        take(/email/i, 1);
-        take(/assign|owner/i, 1);
-        take(/state|district|city|region/i, 1);
-        take(/status|stage/i, 1);
-        keys.forEach(function (k) {
-            if (cols.length >= 6 || used[k]) return;
-            if (/date|time/i.test(k)) return;
-            if (cellText(records[0][k]) !== "") { cols.push(k); used[k] = true; }
-        });
-        return cols;
-    }
-
-    function renderRecent() {
-        el.recentBody.textContent = "";
-        var ds = state.datasets.main;
-        if (!ds) {
-            el.recentSub.textContent = "Loading…";
-            el.recentBody.appendChild(div("chart-empty", "Loading…"));
-            return;
-        }
-        if (ds.error) {
-            el.recentSub.textContent = "";
-            el.recentBody.appendChild(div("chart-empty", "Couldn't load " + CONFIG.reports.main));
-            return;
-        }
-        var recs = filteredRecords(ds).slice();
-        if (ds.dateKey) {
-            recs.sort(function (a, b) {
-                return (parseDate(b[ds.dateKey]) || 0) - (parseDate(a[ds.dateKey]) || 0);
-            });
-        }
-        var cols = pickColumns(recs);
-
-        /* text search across the visible columns */
-        var q = state.search.trim().toLowerCase();
-        if (q) {
-            recs = recs.filter(function (r) {
-                for (var i = 0; i < cols.length; i++) {
-                    if (cellText(r[cols[i]]).toLowerCase().indexOf(q) !== -1) return true;
-                }
-                return false;
-            });
-        }
-        if (!recs.length) {
-            el.recentSub.textContent = "0 records";
-            el.recentBody.appendChild(div("chart-empty",
-                q ? "No records match “" + state.search + "”" : "No applications in this period"));
-            return;
-        }
-        var rows = recs.slice(0, state.tableLimit);
-        el.recentSub.textContent = "Showing " + fmt(rows.length) + " of " + fmt(recs.length) + " records";
-
-        var table = document.createElement("table");
-        table.className = "viz-table";
-        var thead = document.createElement("thead");
-        var trh = document.createElement("tr");
-        cols.concat(ds.dateKey ? ["__date"] : []).forEach(function (c) {
-            var th = document.createElement("th");
-            th.textContent = c === "__date" ? "Added" : c.replace(/_/g, " ");
-            trh.appendChild(th);
-        });
-        thead.appendChild(trh);
-        table.appendChild(thead);
-
-        var tbody = document.createElement("tbody");
-        rows.forEach(function (r) {
-            var tr = document.createElement("tr");
-            cols.forEach(function (c) {
-                var td = document.createElement("td");
-                var text = cellText(r[c]);
-                var stKey = /status|stage/i.test(c) ? normalizeStatus(text) : null;
-                if (stKey) {
-                    var pill = document.createElement("span");
-                    pill.className = "status-pill";
-                    var dot = document.createElement("span");
-                    dot.className = "dot sw-" + stKey;
-                    pill.appendChild(dot);
-                    var lbl = document.createElement("span");
-                    lbl.textContent = text;
-                    pill.appendChild(lbl);
-                    td.appendChild(pill);
-                } else {
-                    td.textContent = text;
-                }
-                tr.appendChild(td);
-            });
-            if (ds.dateKey) {
-                var tdd = document.createElement("td");
-                var d = parseDate(r[ds.dateKey]);
-                tdd.textContent = d ? d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear() : "";
-                tr.appendChild(tdd);
-            }
-            tbody.appendChild(tr);
-        });
-        table.appendChild(tbody);
-        el.recentBody.appendChild(table);
-
-        if (recs.length > rows.length) {
-            var foot = div("table-foot");
-            var more = document.createElement("button");
-            more.type = "button";
-            more.className = "btn-refresh";
-            more.textContent = "Show 25 more (" + fmt(recs.length - rows.length) + " remaining)";
-            more.addEventListener("click", function () {
-                state.tableLimit += 25;
-                renderRecent();
-            });
-            foot.appendChild(more);
-            el.recentBody.appendChild(foot);
-        }
     }
 
     /* ================================================================
        Aggregation tables (chart "table view" twin)
        ================================================================ */
     function buildAggTable(headers, rows) {
+        var wrap = div("table-scroll");
         var table = document.createElement("table");
         table.className = "viz-table";
         var thead = document.createElement("thead");
         var trh = document.createElement("tr");
-        headers.forEach(function (h) {
+        headers.forEach(function (h, i) {
             var th = document.createElement("th");
             th.textContent = h;
+            if (i > 0) th.style.textAlign = "right";
             trh.appendChild(th);
         });
         thead.appendChild(trh);
@@ -1097,46 +940,52 @@
             tbody.appendChild(tr);
         });
         table.appendChild(tbody);
-        return table;
+        wrap.appendChild(table);
+        return wrap;
     }
 
     /* ================================================================
-       Assignee filter options
+       Filters & chrome
        ================================================================ */
     function rebuildAssigneeOptions() {
-        var ds = state.datasets.main;
-        var names = [];
-        if (ds && !ds.error && ds.assigneeKey) {
-            var seen = {};
-            ds.records.forEach(function (r) {
-                var a = assigneeOf(r, ds.assigneeKey);
-                if (!seen[a]) { seen[a] = 1; names.push(a); }
-            });
-            names.sort();
-        }
+        var seen = {}, names = [];
+        model.apps.forEach(function (a) {
+            if (!seen[a.assignee]) { seen[a.assignee] = 1; names.push(a.assignee); }
+        });
+        names.sort(function (a, b) {
+            if (a === UNASSIGNED) return 1;
+            if (b === UNASSIGNED) return -1;
+            return a.localeCompare(b);
+        });
         var sig = names.join("\u0001");
         if (sig === rebuildAssigneeOptions._sig) return;
         rebuildAssigneeOptions._sig = sig;
 
         el.assigneeControl.textContent = "";
-        var optAll = document.createElement("option");
-        optAll.value = "all";
-        optAll.textContent = "All assignees";
-        el.assigneeControl.appendChild(optAll);
-        names.forEach(function (n) {
-            var o = document.createElement("option");
-            o.value = n;
-            o.textContent = n;
-            el.assigneeControl.appendChild(o);
+        [["all", "All assignees"]].concat(names.map(function (n) { return [n, n]; })).forEach(function (o) {
+            var opt = document.createElement("option");
+            opt.value = o[0];
+            opt.textContent = o[1];
+            el.assigneeControl.appendChild(opt);
         });
         el.assigneeControl.disabled = !names.length;
         if (state.assignee !== "all" && names.indexOf(state.assignee) === -1) state.assignee = "all";
         el.assigneeControl.value = state.assignee;
     }
 
-    /* ================================================================
-       Meta / chrome
-       ================================================================ */
+    function syncFilterControls() {
+        var daily = state.view === "daily";
+        el.dateFrom.disabled = daily;
+        el.dateTo.disabled = daily;
+        el.dateClear.disabled = daily || (!state.from && !state.to);
+        el.dateHint.hidden = !daily;
+        el.viewControl.querySelectorAll("button").forEach(function (b) {
+            var on = b.dataset.view === state.view;
+            b.classList.toggle("is-selected", on);
+            b.setAttribute("aria-selected", on ? "true" : "false");
+        });
+    }
+
     function renderMeta() {
         el.sampleBadge.hidden = !state.sample;
         if (state.lastUpdated) {
@@ -1149,19 +998,20 @@
     }
 
     function renderAll() {
-        el.boot.hidden = true;
-        state.rendered = true;
+        hideTip();
+        rebuildAssigneeOptions();
+        syncFilterControls();
+        var p = currentPeriod();
         /* Sections render independently — one bad dataset can never blank
            the whole dashboard. */
-        [renderMeta, rebuildAssigneeOptions, renderKPIs, renderDonut, renderTrend, renderAssignee, renderRecent]
-            .forEach(function (fn) {
-                try { fn(); } catch (e) { console.error("[dashboard] render section failed", e); }
-            });
+        [renderMeta, renderKPIs, renderTrend, renderDonut, renderAssignee].forEach(function (fn) {
+            try { fn(p); } catch (e) { console.error("[dashboard] render section failed", e); }
+        });
     }
 
     function setRefreshing(on) {
         el.refreshBtn.disabled = on;
-        if (state.rendered) el.dashboard.classList.toggle("is-refreshing", on);
+        el.dashboard.classList.toggle("is-refreshing", on);
     }
 
     function showBootError(message, detail) {
@@ -1184,6 +1034,7 @@
 
     /* ================================================================
        Sample data (local preview outside Zoho Creator)
+       Generated in the same raw shape the live reports return.
        ================================================================ */
     function mulberry32(seed) {
         return function () {
@@ -1196,94 +1047,82 @@
 
     function useSampleData() {
         var rnd = mulberry32(20260925);
-        var orgs = ["Skill Bridge Foundation", "Prayaas Livelihood Trust", "TechServe Academy",
-            "Gramin Vikas Sansthan", "Udaan Skill Centre", "Nirmaan Education Society",
-            "Karma Skilling Pvt Ltd", "Sahyog Welfare Trust", "Disha Training Institute",
-            "Jyoti Rural Foundation"];
-        var states = ["Maharashtra", "Karnataka", "Uttar Pradesh", "Tamil Nadu", "Delhi",
-            "Gujarat", "Rajasthan", "Bihar", "Odisha", "Assam"];
-        var assignees = ["Rahul Sharma", "Priya Nair", "Amit Verma", "Sneha Patil", "Vikram Singh"];
-        var statusPool = [];
-        [["Approved", 30], ["Pending", 26], ["Rejected", 12], ["Resubmitted", 16], ["Sent Back", 10]]
-            .forEach(function (p) { for (var i = 0; i < p[1]; i++) statusPool.push(p[0]); });
-
-        function creatorDate(d) {
-            return d.getDate() + "-" + MONTHS[d.getMonth()] + "-" + d.getFullYear() + " " +
-                String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0") + ":00";
+        var assignees = ["Rahul Sharma", "Priya Nair", "Amit Verma", "Sneha Patil", ""];
+        function creatorDate(d, withTime) {
+            var s = String(d.getDate()).padStart(2, "0") + "-" + MONTHS[d.getMonth()] + "-" + d.getFullYear();
+            if (withTime) s += " " + [d.getHours(), d.getMinutes(), d.getSeconds()].map(function (x) { return String(x).padStart(2, "0"); }).join(":");
+            return s;
         }
-
-        var now = Date.now(), main = [];
-        for (var i = 0; i < 230; i++) {
-            var age = Math.pow(rnd(), 1.6) * 360;      // skew recent
-            var d = new Date(now - age * 86400000);
-            var org = orgs[Math.floor(rnd() * orgs.length)];
-            main.push({
-                ID: String(1000 + i),
-                Organization_Name: org,
-                State: states[Math.floor(rnd() * states.length)],
-                Email: org.toLowerCase().replace(/[^a-z]+/g, ".") + "@example.org",
-                Assignee: assignees[Math.floor(rnd() * assignees.length)],
-                Status: statusPool[Math.floor(rnd() * statusPool.length)],
-                Added_Time: creatorDate(d)
-            });
+        var now = Date.now(), apps = [], audit = [], emails = [];
+        for (var i = 0; i < 140; i++) {
+            var id = "1635870000143" + String(i).padStart(5, "0");
+            var t = now - Math.pow(rnd(), 1.5) * 200 * DAY;
+            var name = assignees[Math.floor(rnd() * assignees.length)];
+            audit.push({ NSDC_Partnership_Application_Form: { ID: id }, Action_field: "Submitted", Action_Time: creatorDate(new Date(t), true) });
+            var status = "Submitted", roll = rnd();
+            if (roll < 0.75) {
+                t += (0.2 + rnd() * 6) * DAY;
+                if (t < now) {
+                    status = roll < 0.4 ? "Approved" : roll < 0.55 ? "Rejected" : "Sent Back";
+                    audit.push({ NSDC_Partnership_Application_Form: { ID: id }, Action_field: status, Action_Time: creatorDate(new Date(t), true) });
+                    if (status === "Sent Back" && rnd() < 0.5) {
+                        t += (0.5 + rnd() * 4) * DAY;
+                        if (t < now) {
+                            status = "Resubmitted";
+                            audit.push({ NSDC_Partnership_Application_Form: { ID: id }, Action_field: status, Action_Time: creatorDate(new Date(t), true) });
+                        }
+                    }
+                }
+            }
+            apps.push({ ID: id, Status: status, Assignee: name ? { ID: "u" + name.length, zc_display_value: name } : "" });
         }
-        var emails = [];
-        for (var j = 0; j < 540; j++) {
-            var ed = new Date(now - Math.pow(rnd(), 1.4) * 360 * 86400000);
-            emails.push({ ID: String(9000 + j), Subject: "Application update", Added_Time: creatorDate(ed) });
+        for (var j = 0; j < 320; j++) {
+            emails.push({ ID: String(9000 + j), Email_Sent_Date: creatorDate(new Date(now - Math.pow(rnd(), 1.4) * 200 * DAY), false) });
         }
-
-        function ds(records) {
-            return {
-                records: records, truncated: false, error: false,
-                dateKey: "Added_Time",
-                assigneeKey: records.length && records[0].Assignee ? "Assignee" : null
-            };
-        }
-        function byStatus(st) { return main.filter(function (r) { return r.Status === st; }); }
-
-        state.datasets = {
-            main: ds(main),
-            pending: ds(byStatus("Pending")),
-            approved: ds(byStatus("Approved")),
-            rejected: ds(byStatus("Rejected")),
-            sentback: ds(byStatus("Sent Back")),
-            resubmitted: ds(byStatus("Resubmitted")),
-            emails: ds(emails)
-        };
+        function ds(records) { return { records: records, truncated: false, error: false }; }
+        state.datasets = { applications: ds(apps), audit: ds(audit), emails: ds(emails) };
         state.sample = true;
         state.lastUpdated = new Date();
+        buildModel();
         renderAll();
     }
 
     /* ================================================================
        Controls & boot
        ================================================================ */
-    el.rangeControl.addEventListener("click", function (ev) {
-        var btn = ev.target.closest("button[data-range]");
-        if (!btn || btn.dataset.range === state.range) return;
-        state.range = btn.dataset.range;
-        state.tableLimit = 25;
-        el.rangeControl.querySelectorAll("button").forEach(function (b) {
-            b.classList.toggle("is-selected", b === btn);
-        });
-        if (state.rendered) renderAll();
+    function dateFromInput(v) {
+        var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || "");
+        return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+    }
+
+    function onDateChange() {
+        var from = dateFromInput(el.dateFrom.value), to = dateFromInput(el.dateTo.value);
+        if (from && to && from > to) {       // keep the range ordered
+            var t = from; from = to; to = t;
+            var v = el.dateFrom.value; el.dateFrom.value = el.dateTo.value; el.dateTo.value = v;
+        }
+        state.from = from;
+        state.to = to;
+        renderAll();
+    }
+    el.dateFrom.addEventListener("change", onDateChange);
+    el.dateTo.addEventListener("change", onDateChange);
+    el.dateClear.addEventListener("click", function () {
+        el.dateFrom.value = "";
+        el.dateTo.value = "";
+        onDateChange();
+    });
+
+    el.viewControl.addEventListener("click", function (ev) {
+        var btn = ev.target.closest("button[data-view]");
+        if (!btn || btn.dataset.view === state.view) return;
+        state.view = btn.dataset.view;
+        renderAll();
     });
 
     el.assigneeControl.addEventListener("change", function () {
         state.assignee = el.assigneeControl.value || "all";
-        state.tableLimit = 25;
-        if (state.rendered) renderAll();
-    });
-
-    var searchTimer = null;
-    el.searchInput.addEventListener("input", function () {
-        clearTimeout(searchTimer);
-        searchTimer = setTimeout(function () {
-            state.search = el.searchInput.value || "";
-            state.tableLimit = 25;
-            if (state.rendered) renderRecent();
-        }, 150);
+        renderAll();
     });
 
     document.querySelectorAll(".view-toggle").forEach(function (tg) {
@@ -1297,7 +1136,7 @@
                 b.classList.toggle("is-selected", b === btn);
             });
             var render = { donut: renderDonut, trend: renderTrend, assignee: renderAssignee }[which];
-            if (render) render();
+            if (render) render(currentPeriod());
         });
     });
 
@@ -1309,11 +1148,11 @@
     /* re-render charts on resize (debounced) */
     var resizeTimer = null;
     window.addEventListener("resize", function () {
-        if (!state.rendered) return;
         clearTimeout(resizeTimer);
         resizeTimer = setTimeout(function () {
-            if (state.views.trend === "chart") renderTrend();
-            if (state.views.assignee === "chart") renderAssignee();
+            var p = currentPeriod();
+            if (state.views.trend === "chart") renderTrend(p);
+            if (state.views.assignee === "chart") renderAssignee(p);
         }, 160);
     });
 
@@ -1330,47 +1169,33 @@
            render clearly-badged sample data for layout preview only. */
         if (window.parent === window) { useSampleData(); return; }
 
-        var hasV2 = window.ZOHO && ZOHO.CREATOR && ZOHO.CREATOR.DATA && ZOHO.CREATOR.UTIL &&
-            typeof ZOHO.CREATOR.UTIL.getInitParams === "function";
-        var hasV1 = window.ZOHO && ZOHO.CREATOR && typeof ZOHO.CREATOR.init === "function";
-
-        if (hasV2) {
-            /* SDK v2 has no init(); getInitParams() confirms the Creator
-               context and hands back the hosting app's link name. */
-            var timer = setTimeout(once(function () {
-                showBootError("Timed out connecting to the Creator Widget SDK. Reopen the widget or check your network.");
-            }), CONFIG.initTimeoutMs);
-            try {
-                Promise.resolve(ZOHO.CREATOR.UTIL.getInitParams())
-                    .then(once(function (params) {
-                        clearTimeout(timer);
-                        state.inited = true;
-                        console.log("[dashboard] init params", params);
-                        if (params && params.appLinkName) CONFIG.appLinkName = params.appLinkName;
-                        loadAll();
-                    }))
-                    .catch(once(function (err) {
-                        clearTimeout(timer);
-                        showBootError("The Creator Widget SDK failed to initialise.", errText(err));
-                    }));
-            } catch (e) {
-                once(function () {
+        var C = window.ZOHO && ZOHO.CREATOR;
+        if (!(C && C.DATA && C.UTIL && typeof C.UTIL.getInitParams === "function")) {
+            showBootError("The Creator Widget SDK did not load. Check that widgetsdk-min.js is reachable.");
+            return;
+        }
+        /* SDK v2 has no init(); getInitParams() confirms the Creator
+           context and hands back the hosting app's link name. */
+        var timer = setTimeout(once(function () {
+            showBootError("Timed out connecting to the Creator Widget SDK. Reopen the widget or check your network.");
+        }), CONFIG.initTimeoutMs);
+        try {
+            Promise.resolve(C.UTIL.getInitParams())
+                .then(once(function (params) {
                     clearTimeout(timer);
-                    showBootError("The Creator Widget SDK threw an error.", errText(e));
-                })();
-            }
-        } else if (hasV1) {
-            var timer1 = setTimeout(once(function () {
-                showBootError("Timed out connecting to the Creator Widget SDK. Reopen the widget or check your network.");
-            }), CONFIG.initTimeoutMs);
-            ZOHO.CREATOR.init()
-                .then(once(function () { state.inited = true; clearTimeout(timer1); loadAll(); }))
+                    state.inited = true;
+                    if (params && params.appLinkName) CONFIG.appLinkName = params.appLinkName;
+                    loadAll();
+                }))
                 .catch(once(function (err) {
-                    clearTimeout(timer1);
+                    clearTimeout(timer);
                     showBootError("The Creator Widget SDK failed to initialise.", errText(err));
                 }));
-        } else {
-            showBootError("The Creator Widget SDK did not load. Check that widgetsdk-min.js is reachable.");
+        } catch (e) {
+            once(function () {
+                clearTimeout(timer);
+                showBootError("The Creator Widget SDK threw an error.", errText(e));
+            })();
         }
     }
 

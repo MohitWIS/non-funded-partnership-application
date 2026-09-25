@@ -1,35 +1,56 @@
 # Non-Funded Partnership Application — Zoho Creator Widget
 
 A dashboard widget for the **non-funded-partnership-application** app
-(account: `itzoho_nsdcindia`). It fetches these reports via the Creator
-Widget SDK (v2, with v1 fallback) and renders KPIs, a status donut, a
-time-trend chart and a recent-applications table — no external JS libraries:
+(account: `itzoho_nsdcindia`), built with the Creator Widget SDK v2 and no
+external JS libraries.
 
-| Metric | Report link name |
-|---|---|
-| Total applications / trend / recent table | `NSDC_Partnership_Application_Report` |
-| Pending cases | `My_Pending_Cases` |
-| Approved | `Approved_Cases` |
-| Rejected | `Rejected_Cases` |
-| Sent back | `Sent_Back_Cases` |
-| Resubmitted | `Resubmitted_Cases` |
-| Emails sent | `All_Emails` |
+## Dashboards
 
-Features: date-range filter (all time / 90 / 30 / 7 days), chart⇄table
-toggles, hover tooltips + keyboard navigation, and dark-mode support.
+A switch at the top selects one of two dashboards, each with the same five KPIs:
 
-**Inside Zoho Creator the widget always shows live report data.** If the
-SDK or a report fetch fails it shows an explicit error (with a Retry
-button, or a "Couldn't load report" note on the affected tile) — it never
-substitutes demo numbers. Sample data (clearly badged) appears only when
-the page is opened outside Creator, e.g. locally via `zet run`, where no
-SDK exists.
+- **A. Cumulative (Till date)**: everything to date, or the selected date range
+- **B. Daily (Today)**: only today's activity
 
-Report/app names are configured at the top of `app/js/script.js` (`CONFIG`).
+| KPI | How it is counted |
+| --- | --- |
+| Emails sent | Records in `All_Emails` by `Email_Sent_Date` (form-sharing module) |
+| Form responses received | Applications, dated by their first *Submitted* entry in the audit log |
+| Approved / Rejected / Sent back cases | Till date with no range: applications whose **current** `Status` is that value (matches the *Approved/Rejected/Sent Back Cases* reports). Today or a date range: applications that got that action in the period, per the audit log. |
+
+Graphs (they follow the selected dashboard and filters):
+
+1. **Emails sent vs responses received** over time (daily, weekly or monthly buckets depending on the span; the Daily dashboard shows the last 7 days)
+2. **Case status**: current status of the cases received or acted on in the period
+3. **Cases by assignee**: the same cases, stacked by status
+
+Filters: **Assignee** and **Date range** (From–To). On the Daily dashboard the
+date range is fixed to today. `All_Emails` has no assignee field, so the email
+count ignores the assignee filter, and the tile says so.
+
+Every chart has a Chart/Table toggle, hover tooltips and keyboard navigation,
+and the widget supports dark mode.
+
+## Data sources
+
+Configured in `CONFIG` at the top of `app/js/script.js`. Only the listed
+fields are requested, so no applicant details are loaded.
+
+| Report | Fields used |
+| --- | --- |
+| `NSDC_Partnership_Application_Report` | `Status`, `Assignee` |
+| `Audit_Log_Report` | `NSDC_Partnership_Application_Form`, `Action_field`, `Action_Time` |
+| `All_Emails` | `Email_Sent_Date` |
+
+**Inside Zoho Creator the widget always shows live report data.** An empty
+report counts as 0 (Creator answers HTTP 400 / code 9220, which the browser
+console shows in red but the widget handles). If a report fails to load, the
+affected tiles show "Couldn't load report" and never show made-up numbers.
+Sample data (clearly badged) appears only when the page is opened outside
+Creator.
 
 ## Project Structure
 
-```
+```text
 non-funded-partnership-application/
 ├── plugin-manifest.json   # Widget manifest (service: CREATOR)
 └── app/
@@ -37,7 +58,7 @@ non-funded-partnership-application/
     ├── css/
     │   └── style.css      # Widget styles
     └── js/
-        └── script.js      # Widget logic (SDK init)
+        └── script.js      # Data loading, KPI logic, charts
 ```
 
 ## Prerequisites
