@@ -73,7 +73,8 @@
         from: null,            // Date (start of day) | null
         to: null,              // Date (start of day) | null — inclusive
         assignee: "all",
-        views: { donut: "chart", trend: "chart", assignee: "chart" },
+        views: { donut: "chart", trend: "chart", assignee: "chart", tat: "chart" },
+        activityLimit: 10,     // rows shown in the recent-activity table
         sample: false,
         inited: false,
         lastUpdated: null,
@@ -81,7 +82,7 @@
     };
 
     /* Derived from datasets by buildModel() */
-    var model = { apps: [], emails: [] };
+    var model = { apps: [], emails: [], events: [] };
 
     var nf = new Intl.NumberFormat("en-IN");
     function fmt(n) { return nf.format(n); }
@@ -99,6 +100,10 @@
         trendSub: document.getElementById("trend-sub"),
         assigneeBody: document.getElementById("assignee-body"),
         assigneeSub: document.getElementById("assignee-sub"),
+        tatBody: document.getElementById("tat-body"),
+        tatSub: document.getElementById("tat-sub"),
+        activityBody: document.getElementById("activity-body"),
+        activitySub: document.getElementById("activity-sub"),
         sampleBadge: document.getElementById("sample-badge"),
         lastUpdated: document.getElementById("last-updated"),
         refreshBtn: document.getElementById("refresh-btn"),
@@ -248,12 +253,13 @@
     }
 
     function buildModel() {
-        var byId = {}, apps = [];
+        var byId = {}, apps = [], events = [];
         var A = state.datasets.applications, L = state.datasets.audit, E = state.datasets.emails;
         if (A && !A.error) {
             A.records.forEach(function (r) {
                 var a = {
                     id: String(r.ID),
+                    label: "",
                     status: statusKey(cellText(r[F.status])),
                     assignee: cellText(r[F.assignee]) || UNASSIGNED,
                     events: [],
@@ -269,9 +275,16 @@
                 var a = byId[String(ref && typeof ref === "object" ? ref.ID : ref)];
                 var t = parseDate(r[F.auditTime]);
                 var k = actionKey(r[F.auditAction]);
-                if (a && t && k) a.events.push({ action: k, time: t });
+                if (a && t && k) {
+                    var e = { action: k, time: t, app: a };
+                    a.events.push(e);
+                    events.push(e);
+                    /* the lookup's display value doubles as the application's name */
+                    if (!a.label && ref && typeof ref === "object") a.label = cellText(ref.zc_display_value);
+                }
             });
         }
+        events.sort(function (a, b) { return b.time - a.time; });
         /* Response received = the application's first "Submitted" audit
            entry (earliest entry of any kind if none was logged). */
         apps.forEach(function (a) {
@@ -284,7 +297,7 @@
         });
         var emails = [];
         if (E && !E.error) E.records.forEach(function (r) { emails.push(parseDate(r[F.emailSent])); });
-        model = { apps: apps, emails: emails };
+        model = { apps: apps, emails: emails, events: events };
     }
 
     /* ================================================================
@@ -912,6 +925,243 @@
     }
 
     /* ================================================================
+       Render — decision turnaround time (histogram)
+       ================================================================ */
+    var TAT_BINS = [
+        { max: 1, label: "Same day", full: "Same day" },
+        { max: 3, label: "1–2d", full: "1–2 days" },
+        { max: 8, label: "3–7d", full: "3–7 days" },
+        { max: 15, label: "8–14d", full: "8–14 days" },
+        { max: 31, label: "15–30d", full: "15–30 days" },
+        { max: Infinity, label: "30+d", full: "Over 30 days" }
+    ];
+
+    /* Days from submission to the FIRST decision (approve / reject /
+       sent back), for decisions that fall inside the period. */
+    function decisionTATs(p) {
+        var out = [];
+        filteredApps().forEach(function (a) {
+            if (!a.receivedAt) return;
+            var dec = null;
+            a.events.forEach(function (e) {
+                if ((e.action === "approved" || e.action === "rejected" || e.action === "sentback") &&
+                    e.time >= a.receivedAt && (!dec || e.time < dec.time)) dec = e;
+            });
+            if (!dec || !inPeriod(dec.time, p)) return;
+            out.push(Math.round((startOfDay(dec.time) - startOfDay(a.receivedAt)) / DAY));
+        });
+        return out;
+    }
+
+    function renderTat(p) {
+        el.tatBody.textContent = "";
+        el.tatSub.textContent = p.all ? "Submission to first decision · all decisions"
+            : "Submission to first decision · decisions made in this period";
+        if (!guard(el.tatBody, ["applications", "audit"])) return;
+
+        var days = decisionTATs(p);
+        if (!days.length) { emptyState(el.tatBody, "No decisions in this period"); return; }
+
+        var sorted = days.slice().sort(function (a, b) { return a - b; });
+        var avg = sorted.reduce(function (a, b) { return a + b; }, 0) / sorted.length;
+        var median = sorted[Math.floor((sorted.length - 1) / 2)];
+        el.tatSub.textContent = fmt(sorted.length) + " decisions · average " +
+            (Math.round(avg * 10) / 10) + " days · median " + median + " days";
+
+        var counts = TAT_BINS.map(function () { return 0; });
+        days.forEach(function (d) {
+            for (var i = 0; i < TAT_BINS.length; i++) {
+                if (d < TAT_BINS[i].max) { counts[i]++; break; }
+            }
+        });
+
+        if (state.views.tat === "table") {
+            el.tatBody.appendChild(buildAggTable(
+                ["Turnaround", "Decisions", "Share"],
+                TAT_BINS.map(function (b, i) { return [b.full, fmt(counts[i]), pct(counts[i], days.length)]; })
+            ));
+            return;
+        }
+
+        var W = Math.max(320, el.tatBody.clientWidth || 480);
+        var H = 220;
+        var m = { t: 20, r: 10, b: 30, l: 36 };
+        var pw = W - m.l - m.r, ph = H - m.t - m.b;
+        var n = TAT_BINS.length;
+        var slot = pw / n;
+        var barW = Math.min(24, Math.round(slot * 0.6));
+        var maxCount = Math.max.apply(null, counts);
+        var scale = axisScale(maxCount);
+
+        var s = svgEl("svg", {
+            class: "viz-svg", width: W, height: H, role: "img",
+            "aria-label": "Decision turnaround time histogram, " + el.tatSub.textContent
+        });
+
+        for (var g = 0; g <= 4; g++) {
+            var yv = scale.step * g;
+            var y = m.t + ph - (yv / scale.max) * ph;
+            if (g > 0) s.appendChild(svgEl("line", { class: "grid-line", x1: m.l, x2: m.l + pw, y1: y, y2: y }));
+            var tick = svgEl("text", { class: "axis-tick", x: m.l - 8, y: y + 3.5, "text-anchor": "end" });
+            tick.textContent = fmt(yv);
+            s.appendChild(tick);
+        }
+        s.appendChild(svgEl("line", { class: "axis-line", x1: m.l, x2: m.l + pw, y1: m.t + ph, y2: m.t + ph }));
+
+        TAT_BINS.forEach(function (b, i) {
+            var cxm = m.l + slot * i + slot / 2;
+            var lab = svgEl("text", { class: "axis-tick", x: cxm, y: m.t + ph + 17, "text-anchor": "middle" });
+            lab.textContent = b.label;
+            s.appendChild(lab);
+
+            var c = counts[i];
+            if (!c) return;
+            var h = (c / scale.max) * ph;
+            var x = cxm - barW / 2, y2 = m.t + ph - h;
+            var share = pct(c, days.length);
+            var bar = svgEl("path", {
+                d: vBarPath(x, y2, barW, h, 4),
+                class: "col-bar",
+                tabindex: "0",
+                role: "img",
+                "aria-label": b.full + ": " + fmt(c) + " decisions (" + share + ")"
+            });
+            function activate(px2, py2) {
+                bar.style.opacity = "0.8";
+                showTip(b.full, [{ swatch: "sw-series1", value: fmt(c) + " decisions", label: share }], px2, py2);
+            }
+            function deactivate() { bar.style.opacity = ""; hideTip(); }
+            bar.addEventListener("pointermove", function (ev) { activate(ev.clientX, ev.clientY); });
+            bar.addEventListener("pointerleave", deactivate);
+            bar.addEventListener("focus", function () {
+                var bb = bar.getBoundingClientRect();
+                activate(bb.left + bb.width / 2, bb.top);
+            });
+            bar.addEventListener("blur", deactivate);
+            s.appendChild(bar);
+
+            /* value on the cap */
+            var val = svgEl("text", { class: "bar-value", x: cxm, y: y2 - 6, "text-anchor": "middle" });
+            val.textContent = fmt(c);
+            s.appendChild(val);
+        });
+
+        el.tatBody.appendChild(s);
+    }
+
+    /* 4px rounded top, square baseline */
+    function vBarPath(x, y, w, h, r) {
+        if (h <= r + 1) return "M" + x + " " + (y + h) + " v-" + Math.max(h, 1.5) + " h" + w + " v" + Math.max(h, 1.5) + " Z";
+        return "M" + x + " " + (y + h) +
+            " v" + (-(h - r)) +
+            " a" + r + " " + r + " 0 0 1 " + r + " " + (-r) +
+            " h" + (w - 2 * r) +
+            " a" + r + " " + r + " 0 0 1 " + r + " " + r +
+            " v" + (h - r) + " Z";
+    }
+
+    /* ================================================================
+       Render — recent activity (data table from the audit log)
+       ================================================================ */
+    var ACTION_LABELS = {
+        submitted: "Submitted",
+        approved: "Approved",
+        rejected: "Rejected",
+        sentback: "Sent back",
+        resubmitted: "Resubmitted"
+    };
+    var ACTION_SW = {
+        submitted: "sw-series1",
+        approved: "sw-approved",
+        rejected: "sw-rejected",
+        sentback: "sw-sentback",
+        resubmitted: "sw-resubmitted"
+    };
+
+    function fmtTime(d) {
+        var hh = d.getHours() % 12 || 12;
+        var mm = String(d.getMinutes()).padStart(2, "0");
+        return hh + ":" + mm + " " + (d.getHours() >= 12 ? "PM" : "AM");
+    }
+
+    function renderActivity(p) {
+        el.activityBody.textContent = "";
+        el.activitySub.textContent = "";
+        if (!guard(el.activityBody, ["applications", "audit"])) return;
+
+        var evs = model.events.filter(function (e) {
+            if (!inPeriod(e.time, p)) return false;
+            return state.assignee === "all" || e.app.assignee === state.assignee;
+        });
+        el.activitySub.textContent = fmt(evs.length) + (evs.length === 1 ? " action" : " actions") +
+            (p.all ? " till date" : " in this period");
+        if (!evs.length) { emptyState(el.activityBody, "No activity in this period"); return; }
+
+        var rows = evs.slice(0, state.activityLimit);
+        var wrap = div("table-scroll");
+        var table = document.createElement("table");
+        table.className = "viz-table";
+        var thead = document.createElement("thead");
+        var trh = document.createElement("tr");
+        ["When", "Application", "Action", "Assignee"].forEach(function (h) {
+            var th = document.createElement("th");
+            th.textContent = h;
+            trh.appendChild(th);
+        });
+        thead.appendChild(trh);
+        table.appendChild(thead);
+
+        var tbody = document.createElement("tbody");
+        rows.forEach(function (e) {
+            var tr = document.createElement("tr");
+
+            var tdWhen = document.createElement("td");
+            tdWhen.className = "cell-when";
+            tdWhen.textContent = fmtDate(e.time) + ", " + fmtTime(e.time);
+            tr.appendChild(tdWhen);
+
+            var tdApp = document.createElement("td");
+            tdApp.textContent = e.app.label || "Application …" + e.app.id.slice(-5);
+            tr.appendChild(tdApp);
+
+            var tdAct = document.createElement("td");
+            var pill = document.createElement("span");
+            pill.className = "status-pill";
+            var dot = document.createElement("span");
+            dot.className = "dot " + (ACTION_SW[e.action] || "sw-series1");
+            pill.appendChild(dot);
+            var lbl = document.createElement("span");
+            lbl.textContent = ACTION_LABELS[e.action] || e.action;
+            pill.appendChild(lbl);
+            tdAct.appendChild(pill);
+            tr.appendChild(tdAct);
+
+            var tdWho = document.createElement("td");
+            tdWho.textContent = e.app.assignee;
+            tr.appendChild(tdWho);
+
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        el.activityBody.appendChild(wrap);
+
+        if (evs.length > rows.length) {
+            var foot = div("table-foot");
+            var more = document.createElement("button");
+            more.type = "button";
+            more.className = "btn-refresh";
+            more.textContent = "Show 20 more (" + fmt(evs.length - rows.length) + " remaining)";
+            more.addEventListener("click", function () {
+                state.activityLimit += 20;
+                renderActivity(currentPeriod());
+            });
+            foot.appendChild(more);
+            el.activityBody.appendChild(foot);
+        }
+    }
+
+    /* ================================================================
        Aggregation tables (chart "table view" twin)
        ================================================================ */
     function buildAggTable(headers, rows) {
@@ -1004,7 +1254,7 @@
         var p = currentPeriod();
         /* Sections render independently — one bad dataset can never blank
            the whole dashboard. */
-        [renderMeta, renderKPIs, renderTrend, renderDonut, renderAssignee].forEach(function (fn) {
+        [renderMeta, renderKPIs, renderTrend, renderDonut, renderAssignee, renderTat, renderActivity].forEach(function (fn) {
             try { fn(p); } catch (e) { console.error("[dashboard] render section failed", e); }
         });
     }
@@ -1053,23 +1303,27 @@
             if (withTime) s += " " + [d.getHours(), d.getMinutes(), d.getSeconds()].map(function (x) { return String(x).padStart(2, "0"); }).join(":");
             return s;
         }
+        var orgs = ["Skill Bridge Foundation", "Prayaas Livelihood Trust", "TechServe Academy",
+            "Gramin Vikas Sansthan", "Udaan Skill Centre", "Nirmaan Education Society",
+            "Karma Skilling Pvt Ltd", "Sahyog Welfare Trust"];
         var now = Date.now(), apps = [], audit = [], emails = [];
         for (var i = 0; i < 140; i++) {
             var id = "1635870000143" + String(i).padStart(5, "0");
+            var ref = { ID: id, zc_display_value: orgs[Math.floor(rnd() * orgs.length)] };
             var t = now - Math.pow(rnd(), 1.5) * 200 * DAY;
             var name = assignees[Math.floor(rnd() * assignees.length)];
-            audit.push({ NSDC_Partnership_Application_Form: { ID: id }, Action_field: "Submitted", Action_Time: creatorDate(new Date(t), true) });
+            audit.push({ NSDC_Partnership_Application_Form: ref, Action_field: "Submitted", Action_Time: creatorDate(new Date(t), true) });
             var status = "Submitted", roll = rnd();
             if (roll < 0.75) {
-                t += (0.2 + rnd() * 6) * DAY;
+                t += (0.2 + rnd() * 20) * DAY;
                 if (t < now) {
                     status = roll < 0.4 ? "Approved" : roll < 0.55 ? "Rejected" : "Sent Back";
-                    audit.push({ NSDC_Partnership_Application_Form: { ID: id }, Action_field: status, Action_Time: creatorDate(new Date(t), true) });
+                    audit.push({ NSDC_Partnership_Application_Form: ref, Action_field: status, Action_Time: creatorDate(new Date(t), true) });
                     if (status === "Sent Back" && rnd() < 0.5) {
                         t += (0.5 + rnd() * 4) * DAY;
                         if (t < now) {
                             status = "Resubmitted";
-                            audit.push({ NSDC_Partnership_Application_Form: { ID: id }, Action_field: status, Action_Time: creatorDate(new Date(t), true) });
+                            audit.push({ NSDC_Partnership_Application_Form: ref, Action_field: status, Action_Time: creatorDate(new Date(t), true) });
                         }
                     }
                 }
@@ -1103,6 +1357,7 @@
         }
         state.from = from;
         state.to = to;
+        state.activityLimit = 10;
         renderAll();
     }
     el.dateFrom.addEventListener("change", onDateChange);
@@ -1117,11 +1372,13 @@
         var btn = ev.target.closest("button[data-view]");
         if (!btn || btn.dataset.view === state.view) return;
         state.view = btn.dataset.view;
+        state.activityLimit = 10;
         renderAll();
     });
 
     el.assigneeControl.addEventListener("change", function () {
         state.assignee = el.assigneeControl.value || "all";
+        state.activityLimit = 10;
         renderAll();
     });
 
@@ -1135,7 +1392,7 @@
             tg.querySelectorAll("button").forEach(function (b) {
                 b.classList.toggle("is-selected", b === btn);
             });
-            var render = { donut: renderDonut, trend: renderTrend, assignee: renderAssignee }[which];
+            var render = { donut: renderDonut, trend: renderTrend, assignee: renderAssignee, tat: renderTat }[which];
             if (render) render(currentPeriod());
         });
     });
@@ -1153,6 +1410,7 @@
             var p = currentPeriod();
             if (state.views.trend === "chart") renderTrend(p);
             if (state.views.assignee === "chart") renderAssignee(p);
+            if (state.views.tat === "chart") renderTat(p);
         }, 160);
     });
 
