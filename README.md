@@ -22,6 +22,13 @@ Graphs (they follow the selected dashboard and filters):
 1. **Emails sent vs responses received** over time (daily, weekly or monthly buckets depending on the span; the Daily dashboard shows the last 7 days)
 2. **Case status**: current status of the cases received or acted on in the period
 3. **Cases by assignee**: the same cases, stacked by status
+4. **Decision turnaround time**: histogram of days from submission to the
+   first decision (approve / reject / sent back), with average and median,
+   for decisions made in the period
+
+And a data table, **Recent activity**: the latest audit-log actions
+(when, application, action, assignee), newest first, 10 rows at a time
+with a "Show more" button.
 
 Filters: **Assignee** and **Date range** (From–To). On the Daily dashboard the
 date range is fixed to today. `All_Emails` has no assignee field, so the email
