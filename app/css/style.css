@@ -3,7 +3,7 @@
 /* ------------------------------------------------------------------ */
 :root {
     color-scheme: light;
-    --page: #f9f9f7;
+    --page: #edf2f9;
     --surface-1: #fcfcfb;
     --text-primary: #0b0b0b;
     --text-secondary: #52514e;
@@ -35,7 +35,7 @@
 @media (prefers-color-scheme: dark) {
     :root:where(:not([data-theme="light"])) {
         color-scheme: dark;
-        --page: #0d0d0d;
+        --page: #10141b;
         --surface-1: #1a1a19;
         --text-primary: #ffffff;
         --text-secondary: #c3c2b7;
@@ -53,7 +53,7 @@
 
 :root[data-theme="dark"] {
     color-scheme: dark;
-    --page: #0d0d0d;
+    --page: #10141b;
     --surface-1: #1a1a19;
     --text-primary: #ffffff;
     --text-secondary: #c3c2b7;
@@ -372,6 +372,33 @@ select.filter-input {
     flex-direction: column;
     gap: 8px;
     min-width: 0;
+    box-shadow: 0 1px 3px rgba(15, 40, 80, 0.06);
+}
+
+/* soft tint of each tile's own accent — adapts to dark mode via the vars */
+.tile-emails {
+    background: linear-gradient(150deg, color-mix(in srgb, var(--status-email) 11%, var(--surface-1)), var(--surface-1) 70%);
+    border-color: color-mix(in srgb, var(--status-email) 28%, transparent);
+}
+
+.tile-responses {
+    background: linear-gradient(150deg, color-mix(in srgb, var(--series-1) 11%, var(--surface-1)), var(--surface-1) 70%);
+    border-color: color-mix(in srgb, var(--series-1) 28%, transparent);
+}
+
+.tile-approved {
+    background: linear-gradient(150deg, color-mix(in srgb, var(--status-good) 11%, var(--surface-1)), var(--surface-1) 70%);
+    border-color: color-mix(in srgb, var(--status-good) 28%, transparent);
+}
+
+.tile-rejected {
+    background: linear-gradient(150deg, color-mix(in srgb, var(--status-critical) 11%, var(--surface-1)), var(--surface-1) 70%);
+    border-color: color-mix(in srgb, var(--status-critical) 28%, transparent);
+}
+
+.tile-sentback {
+    background: linear-gradient(150deg, color-mix(in srgb, var(--status-serious) 13%, var(--surface-1)), var(--surface-1) 70%);
+    border-color: color-mix(in srgb, var(--status-serious) 30%, transparent);
 }
 
 .kpi-top {
@@ -498,6 +525,19 @@ select.filter-input {
     border-radius: 12px;
     padding: 18px 20px;
     min-width: 0;
+    position: relative;
+    overflow: hidden;
+    box-shadow: 0 1px 3px rgba(15, 40, 80, 0.06), 0 4px 14px rgba(15, 40, 80, 0.05);
+}
+
+/* colored accent along the top of every card */
+.card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: linear-gradient(90deg, #2a78d6, #1baf7a, #4a3aa7);
+    opacity: 0.85;
 }
 
 .card-head {

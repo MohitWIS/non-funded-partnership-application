@@ -21,13 +21,14 @@
     var CONFIG = {
         appLinkName: "non-funded-partnership-application",
         reports: {
-            applications: { name: "NSDC_Partnership_Application_Report", fields: "Status,Assignee" },
+            applications: { name: "NSDC_Partnership_Application_Report", fields: "Status,Assignee,Unique_ID" },
             audit: { name: "Audit_Log_Report", fields: "NSDC_Partnership_Application_Form,Action_field,Action_Time" },
             emails: { name: "All_Emails", fields: "Email_Sent_Date" }
         },
         fields: {
             status: "Status",
             assignee: "Assignee",
+            uniqueId: "Unique_ID",
             auditApp: "NSDC_Partnership_Application_Form",
             auditAction: "Action_field",
             auditTime: "Action_Time",
@@ -260,6 +261,7 @@
                 var a = {
                     id: String(r.ID),
                     label: "",
+                    uid: cellText(r[F.uniqueId]),
                     status: statusKey(cellText(r[F.status])),
                     assignee: cellText(r[F.assignee]) || UNASSIGNED,
                     events: [],
@@ -519,7 +521,7 @@
         var values = computeKPIs(p);
         TILES.forEach(function (t) {
             var st = sourceState(kpiSources(t.key, p));
-            var tile = div("kpi-tile");
+            var tile = div("kpi-tile tile-" + t.key);
             tile.setAttribute("role", "group");
 
             var top = div("kpi-top");
@@ -1103,7 +1105,7 @@
         table.className = "viz-table";
         var thead = document.createElement("thead");
         var trh = document.createElement("tr");
-        ["When", "Application", "Action", "Assignee"].forEach(function (h) {
+        ["When", "Unique ID", "Action", "Assignee"].forEach(function (h) {
             var th = document.createElement("th");
             th.textContent = h;
             trh.appendChild(th);
@@ -1121,7 +1123,7 @@
             tr.appendChild(tdWhen);
 
             var tdApp = document.createElement("td");
-            tdApp.textContent = e.app.label || "Application …" + e.app.id.slice(-5);
+            tdApp.textContent = e.app.uid || e.app.label || "…" + e.app.id.slice(-5);
             tr.appendChild(tdApp);
 
             var tdAct = document.createElement("td");
@@ -1328,7 +1330,11 @@
                     }
                 }
             }
-            apps.push({ ID: id, Status: status, Assignee: name ? { ID: "u" + name.length, zc_display_value: name } : "" });
+            apps.push({
+                ID: id, Status: status,
+                Unique_ID: "NSDC-2026-" + String(i + 1).padStart(4, "0"),
+                Assignee: name ? { ID: "u" + name.length, zc_display_value: name } : ""
+            });
         }
         for (var j = 0; j < 320; j++) {
             emails.push({ ID: String(9000 + j), Email_Sent_Date: creatorDate(new Date(now - Math.pow(rnd(), 1.4) * 200 * DAY), false) });
